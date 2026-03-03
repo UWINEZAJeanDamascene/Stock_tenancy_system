@@ -22,6 +22,12 @@ const productHistorySchema = new mongoose.Schema({
 });
 
 const productSchema = new mongoose.Schema({
+  // Multi-tenancy: company reference
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: [true, 'Product must belong to a company']
+  },
   name: {
     type: String,
     required: [true, 'Please provide a product name'],
@@ -30,7 +36,6 @@ const productSchema = new mongoose.Schema({
   sku: {
     type: String,
     required: [true, 'Please provide a SKU'],
-    unique: true,
     uppercase: true,
     trim: true
   },
@@ -87,8 +92,12 @@ const productSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Compound index for company + unique sku
+productSchema.index({ company: 1, sku: 1 }, { unique: true });
 // Index for searching
 productSchema.index({ name: 'text', sku: 'text', description: 'text' });
+// Index for company filtering
+productSchema.index({ company: 1 });
 
 // Virtual for low stock alert
 productSchema.virtual('isLowStock').get(function() {

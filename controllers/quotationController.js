@@ -8,8 +8,9 @@ const PDFDocument = require('pdfkit');
 // @access  Private
 exports.getQuotations = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { page = 1, limit = 20, status, clientId, startDate, endDate } = req.query;
-    const query = {};
+    const query = { company: companyId };
 
     if (status) {
       query.status = status;
@@ -53,7 +54,8 @@ exports.getQuotations = async (req, res, next) => {
 // @access  Private
 exports.getQuotation = async (req, res, next) => {
   try {
-    const quotation = await Quotation.findById(req.params.id)
+    const companyId = req.user.company._id;
+    const quotation = await Quotation.findOne({ _id: req.params.id, company: companyId })
       .populate('client', 'name code contact type')
       .populate('items.product', 'name sku unit')
       .populate('createdBy', 'name email')
@@ -81,6 +83,7 @@ exports.getQuotation = async (req, res, next) => {
 // @access  Private (admin, stock_manager, sales)
 exports.createQuotation = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { items } = req.body;
 
     // Calculate item totals
@@ -96,6 +99,7 @@ exports.createQuotation = async (req, res, next) => {
 
     const quotation = await Quotation.create({
       ...req.body,
+      company: companyId,
       items: processedItems,
       createdBy: req.user.id
     });
@@ -116,7 +120,8 @@ exports.createQuotation = async (req, res, next) => {
 // @access  Private (admin, stock_manager, sales)
 exports.updateQuotation = async (req, res, next) => {
   try {
-    let quotation = await Quotation.findById(req.params.id);
+    const companyId = req.user.company._id;
+    let quotation = await Quotation.findOne({ _id: req.params.id, company: companyId });
 
     if (!quotation) {
       return res.status(404).json({
@@ -146,8 +151,8 @@ exports.updateQuotation = async (req, res, next) => {
       });
     }
 
-    quotation = await Quotation.findByIdAndUpdate(
-      req.params.id,
+    quotation = await Quotation.findOneAndUpdate(
+      { _id: req.params.id, company: companyId },
       req.body,
       { new: true, runValidators: true }
     )
@@ -167,7 +172,8 @@ exports.updateQuotation = async (req, res, next) => {
 // @access  Private (admin, sales)
 exports.deleteQuotation = async (req, res, next) => {
   try {
-    const quotation = await Quotation.findById(req.params.id);
+    const companyId = req.user.company._id;
+    const quotation = await Quotation.findOne({ _id: req.params.id, company: companyId });
 
     if (!quotation) {
       return res.status(404).json({
@@ -200,7 +206,8 @@ exports.deleteQuotation = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.approveQuotation = async (req, res, next) => {
   try {
-    const quotation = await Quotation.findById(req.params.id);
+    const companyId = req.user.company._id;
+    const quotation = await Quotation.findOne({ _id: req.params.id, company: companyId });
 
     if (!quotation) {
       return res.status(404).json({
@@ -237,7 +244,8 @@ exports.approveQuotation = async (req, res, next) => {
 // @access  Private (admin, stock_manager, sales)
 exports.convertToInvoice = async (req, res, next) => {
   try {
-    const quotation = await Quotation.findById(req.params.id)
+    const companyId = req.user.company._id;
+    const quotation = await Quotation.findOne({ _id: req.params.id, company: companyId })
       .populate('items.product');
 
     if (!quotation) {
@@ -263,6 +271,7 @@ exports.convertToInvoice = async (req, res, next) => {
 
     // Create invoice from quotation
     const invoice = await Invoice.create({
+      company: companyId,
       client: quotation.client,
       quotation: quotation._id,
       items: quotation.items,
@@ -295,7 +304,8 @@ exports.convertToInvoice = async (req, res, next) => {
 // @access  Private
 exports.getClientQuotations = async (req, res, next) => {
   try {
-    const quotations = await Quotation.find({ client: req.params.clientId })
+    const companyId = req.user.company._id;
+    const quotations = await Quotation.find({ client: req.params.clientId, company: companyId })
       .populate('items.product', 'name sku')
       .populate('createdBy', 'name email')
       .sort({ createdAt: -1 });
@@ -315,7 +325,8 @@ exports.getClientQuotations = async (req, res, next) => {
 // @access  Private
 exports.getProductQuotations = async (req, res, next) => {
   try {
-    const quotations = await Quotation.find({ 'items.product': req.params.productId })
+    const companyId = req.user.company._id;
+    const quotations = await Quotation.find({ 'items.product': req.params.productId, company: companyId })
       .populate('client', 'name code')
       .populate('createdBy', 'name email')
       .sort({ createdAt: -1 });
@@ -335,7 +346,8 @@ exports.getProductQuotations = async (req, res, next) => {
 // @access  Private
 exports.generateQuotationPDF = async (req, res, next) => {
   try {
-    const quotation = await Quotation.findById(req.params.id)
+    const companyId = req.user.company._id;
+    const quotation = await Quotation.findOne({ _id: req.params.id, company: companyId })
       .populate('client')
       .populate('items.product')
       .populate('createdBy');

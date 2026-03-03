@@ -40,9 +40,14 @@ const quotationItemSchema = new mongoose.Schema({
 });
 
 const quotationSchema = new mongoose.Schema({
+  // Multi-tenancy: company reference
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: [true, 'Quotation must belong to a company']
+  },
   quotationNumber: {
     type: String,
-    unique: true,
     uppercase: true
   },
   client: {
@@ -97,10 +102,14 @@ const quotationSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Compound index for company + unique quotation number
+quotationSchema.index({ company: 1, quotationNumber: 1 }, { unique: true });
+quotationSchema.index({ company: 1 });
+
 // Auto-generate quotation number
 quotationSchema.pre('save', async function(next) {
   if (this.isNew && !this.quotationNumber) {
-    const count = await mongoose.model('Quotation').countDocuments();
+    const count = await mongoose.model('Quotation').countDocuments({ company: this.company });
     const year = new Date().getFullYear();
     this.quotationNumber = `QUO-${year}-${String(count + 1).padStart(5, '0')}`;
   }

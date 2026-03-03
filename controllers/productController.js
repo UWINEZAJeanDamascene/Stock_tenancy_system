@@ -21,7 +21,13 @@ exports.getProducts = async (req, res, next) => {
       order = 'desc'
     } = req.query;
 
-    const query = { isArchived };
+    // Multi-tenancy: Filter by company
+    const companyId = req.user.company._id;
+
+    const query = { 
+      company: companyId,
+      isArchived 
+    };
 
     if (search && search.trim()) {
       query.$or = [
@@ -78,7 +84,9 @@ exports.getProducts = async (req, res, next) => {
 // @access  Private
 exports.getProduct = async (req, res, next) => {
   try {
-    const product = await Product.findById(req.params.id)
+    const companyId = req.user.company._id;
+    
+    const product = await Product.findOne({ _id: req.params.id, company: companyId })
       .populate('category', 'name')
       .populate('supplier', 'name code email phone address')
       .populate('createdBy', 'name email')
@@ -105,13 +113,16 @@ exports.getProduct = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.createProduct = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
+    
+    req.body.company = companyId;
     req.body.createdBy = req.user.id;
 
     const product = await Product.create(req.body);
 
     // Link product to supplier if supplier is provided
     if (product.supplier) {
-      const supplier = await Supplier.findById(product.supplier);
+      const supplier = await Supplier.findOne({ _id: product.supplier, company: companyId });
       if (supplier) {
         const isProductAlreadyLinked = supplier.productsSupplied.some(
           (p) => p.toString() === product._id.toString()
@@ -138,7 +149,9 @@ exports.createProduct = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.updateProduct = async (req, res, next) => {
   try {
-    let product = await Product.findById(req.params.id);
+    const companyId = req.user.company._id;
+    
+    let product = await Product.findOne({ _id: req.params.id, company: companyId });
 
     if (!product) {
       return res.status(404).json({ 
@@ -171,7 +184,7 @@ exports.updateProduct = async (req, res, next) => {
     // If supplier changed or newly assigned
     if (newSupplierId && newSupplierId !== oldSupplierId) {
       // Add to new supplier
-      const newSupplier = await Supplier.findById(newSupplierId);
+      const newSupplier = await Supplier.findOne({ _id: newSupplierId, company: companyId });
       if (newSupplier) {
         const isProductAlreadyLinked = newSupplier.productsSupplied.some(
           (p) => p.toString() === product._id.toString()
@@ -198,7 +211,9 @@ exports.updateProduct = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.deleteProduct = async (req, res, next) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const companyId = req.user.company._id;
+    
+    const product = await Product.findOne({ _id: req.params.id, company: companyId });
 
     if (!product) {
       return res.status(404).json({ 
@@ -223,7 +238,9 @@ exports.deleteProduct = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.archiveProduct = async (req, res, next) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const companyId = req.user.company._id;
+    
+    const product = await Product.findOne({ _id: req.params.id, company: companyId });
 
     if (!product) {
       return res.status(404).json({ 
@@ -256,7 +273,9 @@ exports.archiveProduct = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.restoreProduct = async (req, res, next) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const companyId = req.user.company._id;
+    
+    const product = await Product.findOne({ _id: req.params.id, company: companyId });
 
     if (!product) {
       return res.status(404).json({ 
@@ -289,7 +308,9 @@ exports.restoreProduct = async (req, res, next) => {
 // @access  Private
 exports.getProductHistory = async (req, res, next) => {
   try {
-    const product = await Product.findById(req.params.id)
+    const companyId = req.user.company._id;
+    
+    const product = await Product.findOne({ _id: req.params.id, company: companyId })
       .populate('history.changedBy', 'name email');
 
     if (!product) {
@@ -313,7 +334,9 @@ exports.getProductHistory = async (req, res, next) => {
 // @access  Private
 exports.getProductLifecycle = async (req, res, next) => {
   try {
-    const product = await Product.findById(req.params.id)
+    const companyId = req.user.company._id;
+    
+    const product = await Product.findOne({ _id: req.params.id, company: companyId })
       .populate('category', 'name')
       .populate('history.changedBy', 'name email');
 
@@ -325,19 +348,19 @@ exports.getProductLifecycle = async (req, res, next) => {
     }
 
     // Get all stock movements
-    const stockMovements = await StockMovement.find({ product: req.params.id })
+    const stockMovements = await StockMovement.find({ product: req.params.id, company: companyId })
       .populate('supplier', 'name code')
       .populate('performedBy', 'name email')
       .sort({ movementDate: -1 });
 
     // Get all quotations containing this product
-    const quotations = await Quotation.find({ 'items.product': req.params.id })
+    const quotations = await Quotation.find({ 'items.product': req.params.id, company: companyId })
       .populate('client', 'name code')
       .populate('createdBy', 'name email')
       .sort({ createdAt: -1 });
 
     // Get all invoices containing this product
-    const invoices = await Invoice.find({ 'items.product': req.params.id })
+    const invoices = await Invoice.find({ 'items.product': req.params.id, company: companyId })
       .populate('client', 'name code')
       .populate('createdBy', 'name email')
       .sort({ createdAt: -1 });
@@ -408,7 +431,10 @@ const buildTimeline = (product, stockMovements, quotations, invoices) => {
 // @access  Private
 exports.getLowStockProducts = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
+    
     const products = await Product.find({
+      company: companyId,
       isArchived: false,
       $expr: { $lte: ['$currentStock', '$lowStockThreshold'] }
     })

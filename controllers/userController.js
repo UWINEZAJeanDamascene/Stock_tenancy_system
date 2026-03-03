@@ -17,7 +17,10 @@ const generateTempPassword = (length = 8) => {
 exports.getUsers = async (req, res, next) => {
   try {
     const { page = 1, limit = 20, role, isActive } = req.query;
-    const query = {};
+    
+    // Multi-tenancy: Filter by company
+    const companyId = req.user.company._id;
+    const query = { company: companyId };
 
     if (role) {
       query.role = role;
@@ -52,7 +55,9 @@ exports.getUsers = async (req, res, next) => {
 // @access  Private (admin)
 exports.getUser = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id)
+    const companyId = req.user.company._id;
+    
+    const user = await User.findOne({ _id: req.params.id, company: companyId })
       .populate('createdBy', 'name email');
 
     if (!user) {
@@ -76,14 +81,15 @@ exports.getUser = async (req, res, next) => {
 // @access  Private (admin)
 exports.createUser = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { name, email, role, generateTemp } = req.body;
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    // Check if user already exists in this company
+    const existingUser = await User.findOne({ email: email.toLowerCase(), company: companyId });
     if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: 'User with this email already exists'
+        message: 'User with this email already exists in your company'
       });
     }
 
@@ -93,8 +99,9 @@ exports.createUser = async (req, res, next) => {
 
     const user = await User.create({
       name,
-      email,
+      email: email.toLowerCase(),
       password: tempPassword,
+      company: companyId,
       role: role || 'viewer',
       createdBy: req.user.id,
       mustChangePassword,
@@ -116,11 +123,15 @@ exports.createUser = async (req, res, next) => {
 // @access  Private (admin)
 exports.updateUser = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
+    
     // Don't allow password update through this route
     delete req.body.password;
+    // Don't allow changing company
+    delete req.body.company;
 
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
+    const user = await User.findOneAndUpdate(
+      { _id: req.params.id, company: companyId },
       req.body,
       {
         new: true,
@@ -149,7 +160,9 @@ exports.updateUser = async (req, res, next) => {
 // @access  Private (admin)
 exports.deleteUser = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id);
+    const companyId = req.user.company._id;
+    
+    const user = await User.findOne({ _id: req.params.id, company: companyId });
 
     if (!user) {
       return res.status(404).json({
@@ -182,7 +195,9 @@ exports.deleteUser = async (req, res, next) => {
 // @access  Private (admin)
 exports.resetPassword = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id);
+    const companyId = req.user.company._id;
+    
+    const user = await User.findOne({ _id: req.params.id, company: companyId });
 
     if (!user) {
       return res.status(404).json({
@@ -231,7 +246,9 @@ exports.resetPassword = async (req, res, next) => {
 // @access  Private (admin)
 exports.toggleUserStatus = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id);
+    const companyId = req.user.company._id;
+    
+    const user = await User.findOne({ _id: req.params.id, company: companyId });
 
     if (!user) {
       return res.status(404).json({
@@ -266,8 +283,19 @@ exports.toggleUserStatus = async (req, res, next) => {
 // @access  Private (admin)
 exports.getUserActionLogs = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { page = 1, limit = 50, module } = req.query;
-    const query = { user: req.params.id };
+    
+    // First verify user belongs to company
+    const user = await User.findOne({ _id: req.params.id, company: companyId });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const query = { user: req.params.id, company: companyId };
 
     if (module) {
       query.module = module;

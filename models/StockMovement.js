@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const stockMovementSchema = new mongoose.Schema({
+  // Multi-tenancy: company reference
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: [true, 'Stock movement must belong to a company']
+  },
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
@@ -75,6 +81,7 @@ const stockMovementSchema = new mongoose.Schema({
 });
 
 // Indexes for efficient querying
+stockMovementSchema.index({ company: 1 });
 stockMovementSchema.index({ product: 1, movementDate: -1 });
 stockMovementSchema.index({ supplier: 1, movementDate: -1 });
 stockMovementSchema.index({ type: 1, movementDate: -1 });

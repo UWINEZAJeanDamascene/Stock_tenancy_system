@@ -6,8 +6,9 @@ const StockMovement = require('../models/StockMovement');
 // @access  Private
 exports.getSuppliers = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { page = 1, limit = 50, search, isActive } = req.query;
-    const query = {};
+    const query = { company: companyId };
 
     if (search) {
       query.$or = [
@@ -53,7 +54,9 @@ exports.getSuppliers = async (req, res, next) => {
 // @access  Private
 exports.getSupplier = async (req, res, next) => {
   try {
-    const supplier = await Supplier.findById(req.params.id)
+    const companyId = req.user.company._id;
+    
+    const supplier = await Supplier.findOne({ _id: req.params.id, company: companyId })
       .populate('productsSupplied', 'name sku unit')
       .populate('createdBy', 'name email');
 
@@ -66,7 +69,7 @@ exports.getSupplier = async (req, res, next) => {
 
     // Get last purchase date if not set on supplier
     const Purchase = require('../models/Purchase');
-    const lastPurchase = await Purchase.findOne({ supplier: req.params.id, status: { $ne: 'cancelled' } })
+    const lastPurchase = await Purchase.findOne({ supplier: req.params.id, company: companyId, status: { $ne: 'cancelled' } })
       .sort({ purchaseDate: -1 })
       .select('purchaseDate')
       .limit(1);
@@ -90,6 +93,9 @@ exports.getSupplier = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.createSupplier = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
+    
+    req.body.company = companyId;
     req.body.createdBy = req.user.id;
 
     const supplier = await Supplier.create(req.body);
@@ -108,8 +114,10 @@ exports.createSupplier = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.updateSupplier = async (req, res, next) => {
   try {
-    const supplier = await Supplier.findByIdAndUpdate(
-      req.params.id,
+    const companyId = req.user.company._id;
+    
+    const supplier = await Supplier.findOneAndUpdate(
+      { _id: req.params.id, company: companyId },
       req.body,
       {
         new: true,
@@ -138,7 +146,9 @@ exports.updateSupplier = async (req, res, next) => {
 // @access  Private (admin)
 exports.deleteSupplier = async (req, res, next) => {
   try {
-    const supplier = await Supplier.findByIdAndDelete(req.params.id);
+    const companyId = req.user.company._id;
+    
+    const supplier = await Supplier.findOneAndDelete({ _id: req.params.id, company: companyId });
 
     if (!supplier) {
       return res.status(404).json({
@@ -161,9 +171,21 @@ exports.deleteSupplier = async (req, res, next) => {
 // @access  Private
 exports.getSupplierPurchaseHistory = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { page = 1, limit = 20, startDate, endDate } = req.query;
+    
+    // First verify supplier belongs to company
+    const supplier = await Supplier.findOne({ _id: req.params.id, company: companyId });
+    if (!supplier) {
+      return res.status(404).json({
+        success: false,
+        message: 'Supplier not found'
+      });
+    }
+    
     const query = { 
       supplier: req.params.id,
+      company: companyId,
       type: 'in',
       reason: 'purchase'
     };
@@ -210,7 +232,9 @@ exports.getSupplierPurchaseHistory = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.toggleSupplierStatus = async (req, res, next) => {
   try {
-    const supplier = await Supplier.findById(req.params.id);
+    const companyId = req.user.company._id;
+    
+    const supplier = await Supplier.findOne({ _id: req.params.id, company: companyId });
 
     if (!supplier) {
       return res.status(404).json({

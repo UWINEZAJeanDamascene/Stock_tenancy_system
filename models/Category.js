@@ -1,10 +1,15 @@
 const mongoose = require('mongoose');
 
 const categorySchema = new mongoose.Schema({
+  // Multi-tenancy: company reference
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: [true, 'Category must belong to a company']
+  },
   name: {
     type: String,
     required: [true, 'Please provide a category name'],
-    unique: true,
     trim: true
   },
   description: {
@@ -22,5 +27,9 @@ const categorySchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Compound index for company + unique name
+categorySchema.index({ company: 1, name: 1 }, { unique: true });
+categorySchema.index({ company: 1 });
 
 module.exports = mongoose.model('Category', categorySchema);

@@ -10,7 +10,6 @@ const userSchema = new mongoose.Schema({
   email: {
     type: String,
     required: [true, 'Please provide an email'],
-    unique: true,
     lowercase: true,
     trim: true,
     match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/, 'Please provide a valid email']
@@ -21,9 +20,18 @@ const userSchema = new mongoose.Schema({
     minlength: 6,
     select: false
   },
+  // Multi-tenancy: company reference
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: function() {
+      // Company is required unless user is a platform admin
+      return this.role !== 'platform_admin';
+    }
+  },
   role: {
     type: String,
-    enum: ['admin', 'stock_manager', 'sales', 'viewer'],
+    enum: ['platform_admin', 'admin', 'stock_manager', 'sales', 'viewer'],
     default: 'viewer'
   },
   isActive: {
@@ -53,6 +61,9 @@ const userSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Compound index for company + email uniqueness
+userSchema.index({ company: 1, email: 1 }, { unique: true });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {

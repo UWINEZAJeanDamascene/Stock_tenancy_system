@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const actionLogSchema = new mongoose.Schema({
+  // Multi-tenancy: company reference
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: [true, 'Action log must belong to a company']
+  },
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -14,7 +20,7 @@ const actionLogSchema = new mongoose.Schema({
     type: String,
     enum: [
       'product', 'stock', 'supplier', 'client', 
-      'quotation', 'invoice', 'user', 'category', 'report', 'purchase'
+      'quotation', 'invoice', 'user', 'category', 'report', 'purchase', 'company'
     ],
     required: true
   },
@@ -35,6 +41,7 @@ const actionLogSchema = new mongoose.Schema({
 });
 
 // Index for efficient querying
+actionLogSchema.index({ company: 1 });
 actionLogSchema.index({ user: 1, createdAt: -1 });
 actionLogSchema.index({ module: 1, createdAt: -1 });
 actionLogSchema.index({ createdAt: -1 });

@@ -7,7 +7,8 @@ const Product = require('../models/Product');
 exports.getCategories = async (req, res, next) => {
   try {
     const { isActive } = req.query;
-    const query = {};
+    const companyId = req.user.company._id;
+    const query = { company: companyId };
     
     if (isActive !== undefined) {
       query.isActive = isActive === 'true';
@@ -32,7 +33,9 @@ exports.getCategories = async (req, res, next) => {
 // @access  Private
 exports.getCategory = async (req, res, next) => {
   try {
-    const category = await Category.findById(req.params.id)
+    const companyId = req.user.company._id;
+    
+    const category = await Category.findOne({ _id: req.params.id, company: companyId })
       .populate('createdBy', 'name email');
 
     if (!category) {
@@ -43,7 +46,7 @@ exports.getCategory = async (req, res, next) => {
     }
 
     // Get products count in this category
-    const productsCount = await Product.countDocuments({ category: req.params.id });
+    const productsCount = await Product.countDocuments({ category: req.params.id, company: companyId });
 
     res.json({
       success: true,
@@ -62,6 +65,9 @@ exports.getCategory = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.createCategory = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
+    
+    req.body.company = companyId;
     req.body.createdBy = req.user.id;
 
     const category = await Category.create(req.body);
@@ -80,8 +86,10 @@ exports.createCategory = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.updateCategory = async (req, res, next) => {
   try {
-    const category = await Category.findByIdAndUpdate(
-      req.params.id,
+    const companyId = req.user.company._id;
+    
+    const category = await Category.findOneAndUpdate(
+      { _id: req.params.id, company: companyId },
       req.body,
       {
         new: true,
@@ -110,8 +118,10 @@ exports.updateCategory = async (req, res, next) => {
 // @access  Private (admin)
 exports.deleteCategory = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
+    
     // Check if category has products
-    const productsCount = await Product.countDocuments({ category: req.params.id });
+    const productsCount = await Product.countDocuments({ category: req.params.id, company: companyId });
 
     if (productsCount > 0) {
       return res.status(400).json({
@@ -120,7 +130,7 @@ exports.deleteCategory = async (req, res, next) => {
       });
     }
 
-    const category = await Category.findByIdAndDelete(req.params.id);
+    const category = await Category.findOneAndDelete({ _id: req.params.id, company: companyId });
 
     if (!category) {
       return res.status(404).json({

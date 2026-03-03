@@ -10,15 +10,24 @@ const ActionLog = require('../models/ActionLog');
 // @access  Private
 exports.getDashboardStats = async (req, res, next) => {
   try {
+    // Check if user is platform admin
+    if (req.isPlatformAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Platform admin should use platform-specific endpoints'
+      });
+    }
+
+    const companyId = req.user.company._id;
     const today = new Date();
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const startOfYear = new Date(today.getFullYear(), 0, 1);
 
     // Product stats
-    const totalProducts = await Product.countDocuments({ isArchived: false });
+    const totalProducts = await Product.countDocuments({ company: companyId, isArchived: false });
     
     // Get all non-archived products and calculate low stock in JavaScript
-    const allProducts = await Product.find({ isArchived: false });
+    const allProducts = await Product.find({ company: companyId, isArchived: false });
     const lowStockProducts = allProducts.filter(p => p.currentStock <= p.lowStockThreshold).length;
     const outOfStockProducts = allProducts.filter(p => p.currentStock === 0).length;
 
@@ -26,12 +35,14 @@ exports.getDashboardStats = async (req, res, next) => {
     const startOfLastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
     const endOfLastMonth = new Date(today.getFullYear(), today.getMonth(), 0);
     const totalProductsLastMonth = await Product.countDocuments({
+      company: companyId,
       isArchived: false,
       createdAt: { $lte: endOfLastMonth }
     });
 
     // Previous month client stats
     const totalClientsLastMonth = await Client.countDocuments({ 
+      company: companyId,
       isActive: true,
       createdAt: { $lte: endOfLastMonth }
     });
@@ -43,13 +54,14 @@ exports.getDashboardStats = async (req, res, next) => {
     );
 
     // Invoice stats
-    const totalInvoices = await Invoice.countDocuments();
+    const totalInvoices = await Invoice.countDocuments({ company: companyId });
     const pendingInvoices = await Invoice.countDocuments({ 
+      company: companyId,
       status: { $in: ['pending', 'partial', 'overdue'] } 
     });
     
     const monthlyInvoices = await Invoice.aggregate([
-      { $match: { invoiceDate: { $gte: startOfMonth } } },
+      { $match: { company: companyId, invoiceDate: { $gte: startOfMonth } } },
       { $group: { 
         _id: null, 
         total: { $sum: '$grandTotal' },
@@ -59,7 +71,7 @@ exports.getDashboardStats = async (req, res, next) => {
     ]);
 
     const yearlyInvoices = await Invoice.aggregate([
-      { $match: { invoiceDate: { $gte: startOfYear } } },
+      { $match: { company: companyId, invoiceDate: { $gte: startOfYear } } },
       { $group: { 
         _id: null, 
         total: { $sum: '$grandTotal' },
@@ -70,11 +82,12 @@ exports.getDashboardStats = async (req, res, next) => {
 
     // Quotation stats
     const activeQuotations = await Quotation.countDocuments({ 
+      company: companyId,
       status: { $in: ['draft', 'sent', 'approved'] } 
     });
 
     // Client stats
-    const totalClients = await Client.countDocuments({ isActive: true });
+    const totalClients = await Client.countDocuments({ company: companyId, isActive: true });
 
     res.json({
       success: true,
@@ -119,9 +132,18 @@ exports.getDashboardStats = async (req, res, next) => {
 // @access  Private
 exports.getRecentActivities = async (req, res, next) => {
   try {
+    // Check if user is platform admin
+    if (req.isPlatformAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Platform admin should use platform-specific endpoints'
+      });
+    }
+
+    const companyId = req.user.company._id;
     const limit = parseInt(req.query.limit) || 20;
 
-    const activities = await ActionLog.find()
+    const activities = await ActionLog.find({ company: companyId })
       .populate('user', 'name email')
       .sort({ createdAt: -1 })
       .limit(limit);
@@ -141,7 +163,18 @@ exports.getRecentActivities = async (req, res, next) => {
 // @access  Private
 exports.getLowStockAlerts = async (req, res, next) => {
   try {
+    // Check if user is platform admin
+    if (req.isPlatformAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Platform admin should use platform-specific endpoints'
+      });
+    }
+
+    const companyId = req.user.company._id;
+    
     const products = await Product.find({
+      company: companyId,
       isArchived: false,
       $expr: { $lte: ['$currentStock', '$lowStockThreshold'] }
     })
@@ -164,10 +197,20 @@ exports.getLowStockAlerts = async (req, res, next) => {
 // @access  Private
 exports.getTopSellingProducts = async (req, res, next) => {
   try {
+    // Check if user is platform admin
+    if (req.isPlatformAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Platform admin should use platform-specific endpoints'
+      });
+    }
+
+    const companyId = req.user.company._id;
     const limit = parseInt(req.query.limit) || 10;
     const { startDate, endDate } = req.query;
 
     const matchStage = {
+      company: companyId,
       type: 'out',
       reason: 'sale'
     };
@@ -194,6 +237,7 @@ exports.getTopSellingProducts = async (req, res, next) => {
     await Product.populate(topProducts, { 
       path: '_id', 
       select: 'name sku unit category',
+      match: { company: companyId },
       populate: { path: 'category', select: 'name' }
     });
 
@@ -212,10 +256,20 @@ exports.getTopSellingProducts = async (req, res, next) => {
 // @access  Private
 exports.getTopClients = async (req, res, next) => {
   try {
+    // Check if user is platform admin
+    if (req.isPlatformAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Platform admin should use platform-specific endpoints'
+      });
+    }
+
+    const companyId = req.user.company._id;
     const limit = parseInt(req.query.limit) || 10;
     const { startDate, endDate } = req.query;
 
     const matchStage = {
+      company: companyId,
       status: { $in: ['paid', 'partial'] }
     };
 
@@ -240,6 +294,7 @@ exports.getTopClients = async (req, res, next) => {
     // Populate client details
     await Client.populate(topClients, { 
       path: '_id', 
+      match: { company: companyId },
       select: 'name code contact type'
     });
 
@@ -258,6 +313,15 @@ exports.getTopClients = async (req, res, next) => {
 // @access  Private
 exports.getSalesChart = async (req, res, next) => {
   try {
+    // Check if user is platform admin
+    if (req.isPlatformAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Platform admin should use platform-specific endpoints'
+      });
+    }
+
+    const companyId = req.user.company._id;
     const { period = 'month' } = req.query; // 'week', 'month', 'year'
     
     let groupBy;
@@ -282,6 +346,7 @@ exports.getSalesChart = async (req, res, next) => {
 
     const salesData = await Invoice.aggregate([
       { $match: { 
+        company: companyId,
         invoiceDate: { $gte: startDate },
         status: { $ne: 'cancelled' }
       }},
@@ -314,6 +379,15 @@ exports.getSalesChart = async (req, res, next) => {
 // @access  Private
 exports.getStockMovementChart = async (req, res, next) => {
   try {
+    // Check if user is platform admin
+    if (req.isPlatformAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Platform admin should use platform-specific endpoints'
+      });
+    }
+
+    const companyId = req.user.company._id;
     const { period = 'month' } = req.query;
     
     let startDate = new Date();
@@ -327,7 +401,7 @@ exports.getStockMovementChart = async (req, res, next) => {
     }
 
     const movementData = await StockMovement.aggregate([
-      { $match: { movementDate: { $gte: startDate } }},
+      { $match: { company: companyId, movementDate: { $gte: startDate } } },
       { $group: {
         _id: '$type',
         quantity: { $sum: '$quantity' }

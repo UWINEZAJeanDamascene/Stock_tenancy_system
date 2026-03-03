@@ -7,6 +7,7 @@ const Supplier = require('../models/Supplier');
 // @access  Private
 exports.getStockMovements = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const {
       page = 1,
       limit = 20,
@@ -19,12 +20,13 @@ exports.getStockMovements = async (req, res, next) => {
       search
     } = req.query;
 
-    const query = {};
+    const query = { company: companyId };
 
     // Search by product name
     if (search && search.trim()) {
       const products = await Product.find({
-        name: { $regex: search, $options: 'i' }
+        name: { $regex: search, $options: 'i' },
+        company: companyId
       }).select('_id');
       
       if (products.length > 0) {
@@ -71,7 +73,8 @@ exports.getStockMovements = async (req, res, next) => {
 // @access  Private
 exports.getStockMovement = async (req, res, next) => {
   try {
-    const movement = await StockMovement.findById(req.params.id)
+    const companyId = req.user.company._id;
+    const movement = await StockMovement.findOne({ _id: req.params.id, company: companyId })
       .populate('product', 'name sku unit')
       .populate('supplier', 'name code contact')
       .populate('performedBy', 'name email');
@@ -97,6 +100,7 @@ exports.getStockMovement = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.receiveStock = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const {
       product: productId,
       quantity,
@@ -109,7 +113,7 @@ exports.receiveStock = async (req, res, next) => {
     } = req.body;
 
     // Get product
-    const product = await Product.findById(productId);
+    const product = await Product.findOne({ _id: productId, company: companyId });
 
     if (!product) {
       return res.status(404).json({
@@ -123,6 +127,7 @@ exports.receiveStock = async (req, res, next) => {
 
     // Create stock movement
     const movement = await StockMovement.create({
+      company: companyId,
       product: productId,
       type: 'in',
       reason: 'purchase',
@@ -156,7 +161,7 @@ exports.receiveStock = async (req, res, next) => {
 
     // Update supplier if provided
     if (supplierId) {
-      const supplier = await Supplier.findById(supplierId);
+      const supplier = await Supplier.findOne({ _id: supplierId, company: companyId });
       if (supplier) {
         // Add product to supplier's productsSupplied if not already present
         const productObjId = product._id;
@@ -191,6 +196,7 @@ exports.receiveStock = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.adjustStock = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const {
       product: productId,
       quantity,
@@ -209,7 +215,7 @@ exports.adjustStock = async (req, res, next) => {
     }
 
     // Get product
-    const product = await Product.findById(productId);
+    const product = await Product.findOne({ _id: productId, company: companyId });
 
     if (!product) {
       return res.status(404).json({
@@ -240,6 +246,7 @@ exports.adjustStock = async (req, res, next) => {
 
     // Create stock movement
     const movement = await StockMovement.create({
+      company: companyId,
       product: productId,
       type: 'adjustment',
       reason,
@@ -271,11 +278,12 @@ exports.adjustStock = async (req, res, next) => {
 // @access  Private
 exports.getProductStockMovements = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { productId } = req.params;
     const { page = 1, limit = 20 } = req.query;
 
-    const total = await StockMovement.countDocuments({ product: productId });
-    const movements = await StockMovement.find({ product: productId })
+    const total = await StockMovement.countDocuments({ product: productId, company: companyId });
+    const movements = await StockMovement.find({ product: productId, company: companyId })
       .populate('supplier', 'name code')
       .populate('performedBy', 'name email')
       .sort({ movementDate: -1 })
@@ -300,7 +308,8 @@ exports.getProductStockMovements = async (req, res, next) => {
 // @access  Private
 exports.getStockSummary = async (req, res, next) => {
   try {
-    const products = await Product.find({ isArchived: false })
+    const companyId = req.user.company._id;
+    const products = await Product.find({ isArchived: false, company: companyId })
       .populate('category', 'name');
 
     const totalProducts = products.length;
@@ -351,14 +360,15 @@ exports.getStockSummary = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.deleteStockMovement = async (req, res, next) => {
   try {
-    const movement = await StockMovement.findById(req.params.id);
+    const companyId = req.user.company._id;
+    const movement = await StockMovement.findOne({ _id: req.params.id, company: companyId });
 
     if (!movement) {
       return res.status(404).json({ success: false, message: 'Stock movement not found' });
     }
 
     // Revert product stock if possible
-    const product = await Product.findById(movement.product);
+    const product = await Product.findOne({ _id: movement.product, company: companyId });
     if (product) {
       product.currentStock = movement.previousStock;
       await product.save();
@@ -377,7 +387,8 @@ exports.deleteStockMovement = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.updateStockMovement = async (req, res, next) => {
   try {
-    const movement = await StockMovement.findById(req.params.id);
+    const companyId = req.user.company._id;
+    const movement = await StockMovement.findOne({ _id: req.params.id, company: companyId });
 
     if (!movement) {
       return res.status(404).json({ success: false, message: 'Stock movement not found' });

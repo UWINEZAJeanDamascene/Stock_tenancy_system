@@ -73,9 +73,14 @@ const paymentSchema = new mongoose.Schema({
 });
 
 const invoiceSchema = new mongoose.Schema({
+  // Multi-tenancy: company reference
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: [true, 'Invoice must belong to a company']
+  },
   invoiceNumber: {
     type: String,
-    unique: true,
     uppercase: true
   },
   client: {
@@ -201,10 +206,14 @@ const invoiceSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Compound index for company + unique invoice number
+invoiceSchema.index({ company: 1, invoiceNumber: 1 }, { unique: true });
+invoiceSchema.index({ company: 1 });
+
 // Auto-generate invoice number
 invoiceSchema.pre('save', async function(next) {
   if (this.isNew && !this.invoiceNumber) {
-    const count = await mongoose.model('Invoice').countDocuments();
+    const count = await mongoose.model('Invoice').countDocuments({ company: this.company });
     const year = new Date().getFullYear();
     this.invoiceNumber = `INV-${year}-${String(count + 1).padStart(5, '0')}`;
   }

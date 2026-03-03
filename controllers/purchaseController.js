@@ -9,8 +9,9 @@ const PDFDocument = require('pdfkit');
 // @access  Private
 exports.getPurchases = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { page = 1, limit = 20, status, supplierId, startDate, endDate } = req.query;
-    const query = {};
+    const query = { company: companyId };
 
     if (status) {
       query.status = status;
@@ -53,7 +54,8 @@ exports.getPurchases = async (req, res, next) => {
 // @access  Private
 exports.getPurchase = async (req, res, next) => {
   try {
-    const purchase = await Purchase.findById(req.params.id)
+    const companyId = req.user.company._id;
+    const purchase = await Purchase.findOne({ _id: req.params.id, company: companyId })
       .populate('supplier', 'name code contact type taxId')
       .populate('items.product', 'name sku unit')
       .populate('createdBy', 'name email')
@@ -80,10 +82,11 @@ exports.getPurchase = async (req, res, next) => {
 // @access  Private (admin, stock_manager, purchases)
 exports.createPurchase = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { items, supplier: supplierId, currency, paymentTerms, supplierTin, supplierAddress, supplierName, supplierInvoiceNumber, supplierInvoiceDate } = req.body;
 
     // Get supplier details
-    const supplier = await Supplier.findById(supplierId);
+    const supplier = await Supplier.findOne({ _id: supplierId, company: companyId });
     if (!supplier) {
       return res.status(404).json({
         success: false,
@@ -111,6 +114,7 @@ exports.createPurchase = async (req, res, next) => {
 
     const purchase = await Purchase.create({
       ...req.body,
+      company: companyId,
       items: processedItems,
       supplierTin: supplierTin || supplier.taxId,
       supplierName: supplierName || supplier.name,
@@ -134,7 +138,8 @@ exports.createPurchase = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.updatePurchase = async (req, res, next) => {
   try {
-    let purchase = await Purchase.findById(req.params.id);
+    const companyId = req.user.company._id;
+    let purchase = await Purchase.findOne({ _id: req.params.id, company: companyId });
 
     if (!purchase) {
       return res.status(404).json({
@@ -170,8 +175,8 @@ exports.updatePurchase = async (req, res, next) => {
       });
     }
 
-    purchase = await Purchase.findByIdAndUpdate(
-      req.params.id,
+    purchase = await Purchase.findOneAndUpdate(
+      { _id: req.params.id, company: companyId },
       req.body,
       { new: true, runValidators: true }
     )
@@ -191,7 +196,8 @@ exports.updatePurchase = async (req, res, next) => {
 // @access  Private (admin)
 exports.deletePurchase = async (req, res, next) => {
   try {
-    const purchase = await Purchase.findById(req.params.id);
+    const companyId = req.user.company._id;
+    const purchase = await Purchase.findOne({ _id: req.params.id, company: companyId });
 
     if (!purchase) {
       return res.status(404).json({
@@ -224,7 +230,8 @@ exports.deletePurchase = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.receivePurchase = async (req, res, next) => {
   try {
-    const purchase = await Purchase.findById(req.params.id).populate('items.product');
+    const companyId = req.user.company._id;
+    const purchase = await Purchase.findOne({ _id: req.params.id, company: companyId }).populate('items.product');
 
     if (!purchase) {
       return res.status(404).json({
@@ -242,7 +249,7 @@ exports.receivePurchase = async (req, res, next) => {
 
     // Add stock for each item
     for (const item of purchase.items) {
-      const product = await Product.findById(item.product._id);
+      const product = await Product.findOne({ _id: item.product._id, company: companyId });
       
       if (product) {
         const previousStock = product.currentStock || 0;
@@ -250,6 +257,7 @@ exports.receivePurchase = async (req, res, next) => {
 
         // Create stock movement (ledger entry)
         await StockMovement.create({
+          company: companyId,
           product: product._id,
           type: 'in',
           reason: 'purchase',
@@ -292,7 +300,7 @@ exports.receivePurchase = async (req, res, next) => {
     await purchase.save();
 
     // Update supplier stats
-    const supplier = await Supplier.findById(purchase.supplier);
+    const supplier = await Supplier.findOne({ _id: purchase.supplier, company: companyId });
     if (supplier) {
       supplier.totalPurchases += purchase.roundedAmount;
       supplier.outstandingBalance += purchase.roundedAmount;
@@ -315,9 +323,10 @@ exports.receivePurchase = async (req, res, next) => {
 // @access  Private (admin, stock_manager, purchases)
 exports.recordPayment = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { amount, paymentMethod, reference, notes } = req.body;
 
-    const purchase = await Purchase.findById(req.params.id)
+    const purchase = await Purchase.findOne({ _id: req.params.id, company: companyId })
       .populate('items.product');
 
     if (!purchase) {
@@ -356,13 +365,14 @@ exports.recordPayment = async (req, res, next) => {
     if (!purchase.stockAdded && purchase.status === 'draft' && (paymentMethod === 'cash' || paymentMethod === 'card')) {
       // Add stock
       for (const item of purchase.items) {
-        const product = await Product.findById(item.product._id);
+        const product = await Product.findOne({ _id: item.product._id, company: companyId });
         
         if (product) {
           const previousStock = product.currentStock || 0;
           const newStock = previousStock + item.quantity;
 
           await StockMovement.create({
+            company: companyId,
             product: product._id,
             type: 'in',
             reason: 'purchase',
@@ -394,7 +404,7 @@ exports.recordPayment = async (req, res, next) => {
     }
 
     // Update supplier stats
-    const supplier = await Supplier.findById(purchase.supplier);
+    const supplier = await Supplier.findOne({ _id: purchase.supplier, company: companyId });
     if (supplier) {
       supplier.outstandingBalance -= amount;
       if (supplier.outstandingBalance < 0) supplier.outstandingBalance = 0;
@@ -422,9 +432,10 @@ exports.recordPayment = async (req, res, next) => {
 // @access  Private (admin)
 exports.cancelPurchase = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { reason } = req.body;
 
-    const purchase = await Purchase.findById(req.params.id).populate('items.product');
+    const purchase = await Purchase.findOne({ _id: req.params.id, company: companyId }).populate('items.product');
 
     if (!purchase) {
       return res.status(404).json({
@@ -443,7 +454,7 @@ exports.cancelPurchase = async (req, res, next) => {
     // Reverse stock if it was added
     if (purchase.stockAdded) {
       for (const item of purchase.items) {
-        const product = await Product.findById(item.product._id);
+        const product = await Product.findOne({ _id: item.product._id, company: companyId });
         
         if (product) {
           const previousStock = product.currentStock;
@@ -451,6 +462,7 @@ exports.cancelPurchase = async (req, res, next) => {
 
           // Create reversal stock movement
           await StockMovement.create({
+            company: companyId,
             product: product._id,
             type: 'out',
             reason: 'return',
@@ -474,7 +486,7 @@ exports.cancelPurchase = async (req, res, next) => {
     }
 
     // Update supplier outstanding balance
-    const supplier = await Supplier.findById(purchase.supplier);
+    const supplier = await Supplier.findOne({ _id: purchase.supplier, company: companyId });
     if (supplier) {
       const unpaidAmount = purchase.roundedAmount - purchase.amountPaid;
       supplier.outstandingBalance -= unpaidAmount;
@@ -504,7 +516,8 @@ exports.cancelPurchase = async (req, res, next) => {
 // @access  Private
 exports.getSupplierPurchases = async (req, res, next) => {
   try {
-    const purchases = await Purchase.find({ supplier: req.params.supplierId })
+    const companyId = req.user.company._id;
+    const purchases = await Purchase.find({ supplier: req.params.supplierId, company: companyId })
       .populate('items.product', 'name sku')
       .populate('createdBy', 'name email')
       .sort({ purchaseDate: -1 });
@@ -524,7 +537,8 @@ exports.getSupplierPurchases = async (req, res, next) => {
 // @access  Private
 exports.generatePurchasePDF = async (req, res, next) => {
   try {
-    const purchase = await Purchase.findById(req.params.id)
+    const companyId = req.user.company._id;
+    const purchase = await Purchase.findOne({ _id: req.params.id, company: companyId })
       .populate('supplier')
       .populate('items.product')
       .populate('createdBy');

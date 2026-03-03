@@ -10,8 +10,9 @@ const PDFDocument = require('pdfkit');
 // @access  Private
 exports.getInvoices = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { page = 1, limit = 20, status, clientId, startDate, endDate } = req.query;
-    const query = {};
+    const query = { company: companyId };
 
     if (status) {
       query.status = status;
@@ -55,7 +56,8 @@ exports.getInvoices = async (req, res, next) => {
 // @access  Private
 exports.getInvoice = async (req, res, next) => {
   try {
-    const invoice = await Invoice.findById(req.params.id)
+    const companyId = req.user.company._id;
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId })
       .populate('client', 'name code contact type taxId')
       .populate('items.product', 'name sku unit')
       .populate('createdBy', 'name email')
@@ -70,7 +72,7 @@ exports.getInvoice = async (req, res, next) => {
     }
 
     // Get receipt metadata if exists
-    const receiptMetadata = await InvoiceReceiptMetadata.findOne({ invoice: invoice._id });
+    const receiptMetadata = await InvoiceReceiptMetadata.findOne({ invoice: invoice._id, company: companyId });
 
     res.json({
       success: true,
@@ -89,10 +91,11 @@ exports.getInvoice = async (req, res, next) => {
 // @access  Private (admin, stock_manager, sales)
 exports.createInvoice = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { items, client: clientId, quotation, currency, paymentTerms, customerTin, customerAddress, customerName } = req.body;
 
     // Get client details for TIN and address
-    const client = await Client.findById(clientId);
+    const client = await Client.findOne({ _id: clientId, company: companyId });
     if (!client) {
       return res.status(404).json({
         success: false,
@@ -102,7 +105,7 @@ exports.createInvoice = async (req, res, next) => {
 
     // Validate stock availability for all items BEFORE creating
     for (const item of items) {
-      const product = await Product.findById(item.product);
+      const product = await Product.findOne({ _id: item.product, company: companyId });
       if (!product) {
         return res.status(400).json({
           success: false,
@@ -137,6 +140,7 @@ exports.createInvoice = async (req, res, next) => {
 
     const invoice = await Invoice.create({
       ...req.body,
+      company: companyId,
       items: processedItems,
       customerTin: customerTin || client.taxId,
       customerName: customerName || client.name,
@@ -160,7 +164,8 @@ exports.createInvoice = async (req, res, next) => {
 // @access  Private (admin, stock_manager, sales)
 exports.updateInvoice = async (req, res, next) => {
   try {
-    let invoice = await Invoice.findById(req.params.id);
+    const companyId = req.user.company._id;
+    let invoice = await Invoice.findOne({ _id: req.params.id, company: companyId });
 
     if (!invoice) {
       return res.status(404).json({
@@ -180,7 +185,7 @@ exports.updateInvoice = async (req, res, next) => {
     // If items are updated, validate stock
     if (req.body.items) {
       for (const item of req.body.items) {
-        const product = await Product.findById(item.product);
+        const product = await Product.findOne({ _id: item.product, company: companyId });
         if (!product) {
           return res.status(400).json({
             success: false,
@@ -213,8 +218,8 @@ exports.updateInvoice = async (req, res, next) => {
       });
     }
 
-    invoice = await Invoice.findByIdAndUpdate(
-      req.params.id,
+    invoice = await Invoice.findOneAndUpdate(
+      { _id: req.params.id, company: companyId },
       req.body,
       { new: true, runValidators: true }
     )
@@ -234,7 +239,8 @@ exports.updateInvoice = async (req, res, next) => {
 // @access  Private (admin)
 exports.deleteInvoice = async (req, res, next) => {
   try {
-    const invoice = await Invoice.findById(req.params.id);
+    const companyId = req.user.company._id;
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId });
 
     if (!invoice) {
       return res.status(404).json({
@@ -267,7 +273,8 @@ exports.deleteInvoice = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.confirmInvoice = async (req, res, next) => {
   try {
-    const invoice = await Invoice.findById(req.params.id).populate('items.product');
+    const companyId = req.user.company._id;
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId }).populate('items.product');
 
     if (!invoice) {
       return res.status(404).json({
@@ -285,7 +292,7 @@ exports.confirmInvoice = async (req, res, next) => {
 
     // Validate stock and deduct
     for (const item of invoice.items) {
-      const product = await Product.findById(item.product._id);
+      const product = await Product.findOne({ _id: item.product._id, company: companyId });
       
       if (!product) {
         return res.status(400).json({
@@ -306,6 +313,7 @@ exports.confirmInvoice = async (req, res, next) => {
 
       // Create stock movement (ledger entry)
       await StockMovement.create({
+        company: companyId,
         product: product._id,
         type: 'out',
         reason: 'sale',
@@ -346,7 +354,7 @@ exports.confirmInvoice = async (req, res, next) => {
     }
 
     // Update client stats
-    const client = await Client.findById(invoice.client);
+    const client = await Client.findOne({ _id: invoice.client, company: companyId });
     if (client) {
       client.outstandingBalance += invoice.roundedAmount;
       await client.save();
@@ -367,9 +375,10 @@ exports.confirmInvoice = async (req, res, next) => {
 // @access  Private (admin, stock_manager, sales)
 exports.recordPayment = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { amount, paymentMethod, reference, notes } = req.body;
 
-    const invoice = await Invoice.findById(req.params.id)
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId })
       .populate('items.product');
 
     if (!invoice) {
@@ -408,13 +417,14 @@ exports.recordPayment = async (req, res, next) => {
     if (!invoice.stockDeducted && invoice.status === 'draft') {
       // Deduct stock on first payment
       for (const item of invoice.items) {
-        const product = await Product.findById(item.product._id);
+        const product = await Product.findOne({ _id: item.product._id, company: companyId });
         
         if (product && product.currentStock >= item.quantity) {
           const previousStock = product.currentStock;
           const newStock = previousStock - item.quantity;
 
           await StockMovement.create({
+            company: companyId,
             product: product._id,
             type: 'out',
             reason: 'sale',
@@ -444,7 +454,7 @@ exports.recordPayment = async (req, res, next) => {
     }
 
     // Update client stats whenever a payment is recorded
-    const client = await Client.findById(invoice.client);
+    const client = await Client.findOne({ _id: invoice.client, company: companyId });
     if (client) {
       client.totalPurchases += amount;
       client.outstandingBalance -= amount;
@@ -470,9 +480,10 @@ exports.recordPayment = async (req, res, next) => {
 // @access  Private (admin)
 exports.cancelInvoice = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { reason } = req.body;
 
-    const invoice = await Invoice.findById(req.params.id).populate('items.product');
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId }).populate('items.product');
 
     if (!invoice) {
       return res.status(404).json({
@@ -491,7 +502,7 @@ exports.cancelInvoice = async (req, res, next) => {
     // Reverse stock if it was deducted
     if (invoice.stockDeducted) {
       for (const item of invoice.items) {
-        const product = await Product.findById(item.product._id);
+        const product = await Product.findOne({ _id: item.product._id, company: companyId });
         
         if (product) {
           const previousStock = product.currentStock;
@@ -499,6 +510,7 @@ exports.cancelInvoice = async (req, res, next) => {
 
           // Create reversal stock movement
           await StockMovement.create({
+            company: companyId,
             product: product._id,
             type: 'in',
             reason: 'return',
@@ -523,7 +535,7 @@ exports.cancelInvoice = async (req, res, next) => {
     }
 
     // Update client outstanding balance
-    const client = await Client.findById(invoice.client);
+    const client = await Client.findOne({ _id: invoice.client, company: companyId });
     if (client) {
       const unpaidAmount = invoice.roundedAmount - invoice.amountPaid;
       client.outstandingBalance -= unpaidAmount;
@@ -553,9 +565,10 @@ exports.cancelInvoice = async (req, res, next) => {
 // @access  Private (admin)
 exports.saveReceiptMetadata = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { sdcId, receiptNumber, receiptSignature, internalData, mrcCode, deviceId, fiscalDate } = req.body;
 
-    const invoice = await Invoice.findById(req.params.id);
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId });
 
     if (!invoice) {
       return res.status(404).json({
@@ -565,7 +578,7 @@ exports.saveReceiptMetadata = async (req, res, next) => {
     }
 
     // Check if metadata already exists
-    let metadata = await InvoiceReceiptMetadata.findOne({ invoice: invoice._id });
+    let metadata = await InvoiceReceiptMetadata.findOne({ invoice: invoice._id, company: companyId });
 
     if (metadata) {
       // Update existing
@@ -578,6 +591,7 @@ exports.saveReceiptMetadata = async (req, res, next) => {
       // Create new
       metadata = await InvoiceReceiptMetadata.create({
         invoice: invoice._id,
+        company: companyId,
         sdcId,
         receiptNumber,
         receiptSignature,
@@ -602,7 +616,8 @@ exports.saveReceiptMetadata = async (req, res, next) => {
 // @access  Private
 exports.getClientInvoices = async (req, res, next) => {
   try {
-    const invoices = await Invoice.find({ client: req.params.clientId })
+    const companyId = req.user.company._id;
+    const invoices = await Invoice.find({ client: req.params.clientId, company: companyId })
       .populate('items.product', 'name sku')
       .populate('createdBy', 'name email')
       .sort({ invoiceDate: -1 });
@@ -622,7 +637,8 @@ exports.getClientInvoices = async (req, res, next) => {
 // @access  Private
 exports.getProductInvoices = async (req, res, next) => {
   try {
-    const invoices = await Invoice.find({ 'items.product': req.params.productId })
+    const companyId = req.user.company._id;
+    const invoices = await Invoice.find({ 'items.product': req.params.productId, company: companyId })
       .populate('client', 'name code')
       .populate('createdBy', 'name email')
       .sort({ invoiceDate: -1 });
@@ -642,7 +658,8 @@ exports.getProductInvoices = async (req, res, next) => {
 // @access  Private
 exports.generateInvoicePDF = async (req, res, next) => {
   try {
-    const invoice = await Invoice.findById(req.params.id)
+    const companyId = req.user.company._id;
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId })
       .populate('client')
       .populate('items.product')
       .populate('createdBy');

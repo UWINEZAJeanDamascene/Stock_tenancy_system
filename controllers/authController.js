@@ -1,51 +1,14 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Company = require('../models/Company');
 
-// Generate JWT Token
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRE
-  });
-};
-
-// @desc    Register user (Admin only - for creating users)
-// @route   POST /api/auth/register
-// @access  Private (Admin)
-exports.register = async (req, res, next) => {
-  try {
-    const { name, email, password, role, mustChangePassword } = req.body;
-
-    // Check if user exists
-    const userExists = await User.findOne({ email });
-    if (userExists) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'User already exists' 
-      });
-    }
-
-    // Create user
-    const user = await User.create({
-      name,
-      email,
-      password,
-      role: role || 'viewer',
-      createdBy: req.user?._id,
-      mustChangePassword: mustChangePassword || false,
-      tempPassword: mustChangePassword || false
-    });
-
-    // Generate token
-    const token = generateToken(user._id);
-
-    res.status(201).json({
-      success: true,
-      data: user,
-      token
-    });
-  } catch (error) {
-    next(error);
-  }
+// Generate JWT Token with company and role info
+const generateToken = (id, companyId, role) => {
+  return jwt.sign(
+    { id, companyId, role },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRE }
+  );
 };
 
 // @desc    Login user
@@ -64,7 +27,7 @@ exports.login = async (req, res, next) => {
     }
 
     // Check for user
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email: email.toLowerCase() }).select('+password').populate('company', 'name email isActive approvalStatus');
 
     if (!user) {
       return res.status(401).json({ 
@@ -78,6 +41,39 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({ 
         success: false, 
         message: 'Account is inactive. Please contact administrator.' 
+      });
+    }
+
+    // Check if user is platform admin - they don't have a company
+    if (user.role === 'platform_admin') {
+      // Generate token without companyId for platform admin
+      const token = generateToken(user._id, null, user.role);
+      
+      const userWithoutPassword = user.toJSON();
+      
+      return res.json({
+        success: true,
+        data: userWithoutPassword,
+        token,
+        requirePasswordChange: user.mustChangePassword || false,
+        isPlatformAdmin: true
+      });
+    }
+
+    // Check if company is active
+    if (!user.company || !user.company.isActive) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Company account is inactive. Please contact support.' 
+      });
+    }
+
+    // Check if company is approved
+    if (user.company.approvalStatus !== 'approved') {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Company is pending approval. Please wait for platform administrator to approve your registration.',
+        approvalStatus: user.company.approvalStatus
       });
     }
 
@@ -98,12 +94,16 @@ exports.login = async (req, res, next) => {
     user.lastLogin = new Date();
     await user.save();
 
-    // Generate token
-    const token = generateToken(user._id);
+    // Generate token with companyId
+    const token = generateToken(user._id, user.company._id, user.role);
+
+    // Remove password from user object
+    const userWithoutPassword = user.toJSON();
 
     res.json({
       success: true,
-      data: user,
+      data: userWithoutPassword,
+      company: user.company,
       token,
       requirePasswordChange
     });
@@ -117,7 +117,7 @@ exports.login = async (req, res, next) => {
 // @access  Private
 exports.getMe = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id);
+    const user = await User.findById(req.user.id).populate('company', 'name email');
 
     res.json({
       success: true,
@@ -160,7 +160,7 @@ exports.updatePassword = async (req, res, next) => {
     user.tempPassword = false;
     await user.save();
 
-    const token = generateToken(user._id);
+    const token = generateToken(user._id, req.user.company._id, user.role);
 
     res.json({
       success: true,

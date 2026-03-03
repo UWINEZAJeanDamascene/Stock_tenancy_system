@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const clientSchema = new mongoose.Schema({
+  // Multi-tenancy: company reference
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: [true, 'Client must belong to a company']
+  },
   name: {
     type: String,
     required: [true, 'Please provide a client name'],
@@ -8,7 +14,6 @@ const clientSchema = new mongoose.Schema({
   },
   code: {
     type: String,
-    unique: true,
     uppercase: true,
     trim: true
   },
@@ -60,10 +65,14 @@ const clientSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Compound index for company + unique code
+clientSchema.index({ company: 1, code: 1 }, { unique: true });
+clientSchema.index({ company: 1 });
+
 // Auto-generate client code
 clientSchema.pre('save', async function(next) {
   if (this.isNew && !this.code) {
-    const count = await mongoose.model('Client').countDocuments();
+    const count = await mongoose.model('Client').countDocuments({ company: this.company });
     this.code = `CLI${String(count + 1).padStart(5, '0')}`;
   }
   next();

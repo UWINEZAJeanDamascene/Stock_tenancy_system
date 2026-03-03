@@ -6,8 +6,9 @@ const Invoice = require('../models/Invoice');
 // @access  Private
 exports.getClients = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { page = 1, limit = 20, search, type, isActive } = req.query;
-    const query = {};
+    const query = { company: companyId };
 
     if (search) {
       query.$or = [
@@ -50,7 +51,8 @@ exports.getClients = async (req, res, next) => {
 // @access  Private
 exports.getClient = async (req, res, next) => {
   try {
-    const client = await Client.findById(req.params.id)
+    const companyId = req.user.company._id;
+    const client = await Client.findOne({ _id: req.params.id, company: companyId })
       .populate('createdBy', 'name email');
 
     if (!client) {
@@ -74,7 +76,9 @@ exports.getClient = async (req, res, next) => {
 // @access  Private (admin, stock_manager, sales)
 exports.createClient = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     req.body.createdBy = req.user.id;
+    req.body.company = companyId;
 
     const client = await Client.create(req.body);
 
@@ -92,8 +96,9 @@ exports.createClient = async (req, res, next) => {
 // @access  Private (admin, stock_manager, sales)
 exports.updateClient = async (req, res, next) => {
   try {
-    const client = await Client.findByIdAndUpdate(
-      req.params.id,
+    const companyId = req.user.company._id;
+    const client = await Client.findOneAndUpdate(
+      { _id: req.params.id, company: companyId },
       req.body,
       {
         new: true,
@@ -122,7 +127,8 @@ exports.updateClient = async (req, res, next) => {
 // @access  Private (admin)
 exports.deleteClient = async (req, res, next) => {
   try {
-    const client = await Client.findByIdAndDelete(req.params.id);
+    const companyId = req.user.company._id;
+    const client = await Client.findOneAndDelete({ _id: req.params.id, company: companyId });
 
     if (!client) {
       return res.status(404).json({
@@ -145,9 +151,11 @@ exports.deleteClient = async (req, res, next) => {
 // @access  Private
 exports.getClientPurchaseHistory = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { page = 1, limit = 20, startDate, endDate } = req.query;
     const query = { 
       client: req.params.id,
+      company: companyId,
       status: { $in: ['paid', 'partial'] }
     };
 
@@ -192,8 +200,10 @@ exports.getClientPurchaseHistory = async (req, res, next) => {
 // @access  Private
 exports.getClientOutstandingInvoices = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const invoices = await Invoice.find({
       client: req.params.id,
+      company: companyId,
       status: { $in: ['pending', 'partial', 'overdue'] }
     })
       .populate('createdBy', 'name email')
@@ -217,7 +227,8 @@ exports.getClientOutstandingInvoices = async (req, res, next) => {
 // @access  Private (admin, stock_manager)
 exports.toggleClientStatus = async (req, res, next) => {
   try {
-    const client = await Client.findById(req.params.id);
+    const companyId = req.user.company._id;
+    const client = await Client.findOne({ _id: req.params.id, company: companyId });
 
     if (!client) {
       return res.status(404).json({
@@ -243,8 +254,9 @@ exports.toggleClientStatus = async (req, res, next) => {
 // @access  Private
 exports.getClientsWithStats = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const { page = 1, limit = 50, search, type, isActive } = req.query;
-    const query = {};
+    const query = { company: companyId };
 
     if (search) {
       query.$or = [
@@ -275,6 +287,7 @@ exports.getClientsWithStats = async (req, res, next) => {
       {
         $match: {
           client: { $in: clientIds },
+          company: companyId,
           status: { $in: ['pending', 'partial', 'overdue'] }
         }
       },
@@ -323,10 +336,11 @@ exports.getClientsWithStats = async (req, res, next) => {
 // @access  Private
 exports.exportClientsToPDF = async (req, res, next) => {
   try {
+    const companyId = req.user.company._id;
     const PDFDocument = require('pdfkit');
     const { type, isActive } = req.query;
     
-    const query = {};
+    const query = { company: companyId };
     if (type) query.type = type;
     if (isActive !== undefined) query.isActive = isActive === 'true';
 
@@ -338,6 +352,7 @@ exports.exportClientsToPDF = async (req, res, next) => {
       {
         $match: {
           client: { $in: clientIds },
+          company: companyId,
           status: { $in: ['paid', 'partial'] }
         }
       },

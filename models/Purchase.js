@@ -73,9 +73,14 @@ const purchasePaymentSchema = new mongoose.Schema({
 });
 
 const purchaseSchema = new mongoose.Schema({
+  // Multi-tenancy: company reference
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: [true, 'Purchase must belong to a company']
+  },
   purchaseNumber: {
     type: String,
-    unique: true,
     uppercase: true
   },
   supplier: {
@@ -92,6 +97,7 @@ const purchaseSchema = new mongoose.Schema({
   supplierInvoiceNumber: String,
   supplierInvoiceDate: Date,
   
+  // Status
   status: {
     type: String,
     enum: ['draft', 'ordered', 'received', 'partial', 'paid', 'cancelled'],
@@ -200,10 +206,14 @@ const purchaseSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Compound index for company + unique purchase number
+purchaseSchema.index({ company: 1, purchaseNumber: 1 }, { unique: true });
+purchaseSchema.index({ company: 1 });
+
 // Auto-generate purchase number
 purchaseSchema.pre('save', async function(next) {
   if (this.isNew && !this.purchaseNumber) {
-    const count = await mongoose.model('Purchase').countDocuments();
+    const count = await mongoose.model('Purchase').countDocuments({ company: this.company });
     const year = new Date().getFullYear();
     this.purchaseNumber = `PO-${year}-${String(count + 1).padStart(5, '0')}`;
   }
