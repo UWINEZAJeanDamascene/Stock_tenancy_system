@@ -29,7 +29,7 @@ const seedData = async () => {
     console.log('Creating admin user...');
     const admin = await User.create({
       name: 'Admin User',
-      email: 'admin@stock.com',
+      email: 'jayfcode@gmail.com',
       password: 'admin123',
       role: 'admin'
     });
@@ -291,7 +291,7 @@ const seedData = async () => {
     console.log('\n📝 Default Users Created:');
     console.log('=======================');
     console.log('Admin:');
-    console.log('  Email: admin@stock.com');
+    console.log('  Email: jayfcode@gmail.com');
     console.log('  Password: admin123');
     console.log('\nStock Manager:');
     console.log('  Email: stock@stock.com');

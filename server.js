@@ -36,8 +36,13 @@ const corsOptions = {
       return callback(null, true);
     }
     
-    // Allow Vercel deployments
+    // Allow all Vercel deployments (most common frontend hosting platform)
     if (origin.includes('vercel.app')) {
+      return callback(null, true);
+    }
+    
+    // Allow all Render deployments (for self-hosted backends)
+    if (origin.includes('render.com')) {
       return callback(null, true);
     }
     
@@ -45,10 +50,16 @@ const corsOptions = {
     const allowedOrigins = [
       'https://stock-management-frontend.vercel.app',
       'https://your-frontend.vercel.app',
-      'https://stock-frontend-topaz-alpha.vercel.app'
+      'https://stock-frontend-topaz-alpha.vercel.app',
+      'https://stock-management-v3rl.onrender.com'
     ];
     
     if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // For development, allow all (remove in production)
+    if (process.env.NODE_ENV === 'development') {
       return callback(null, true);
     }
     
