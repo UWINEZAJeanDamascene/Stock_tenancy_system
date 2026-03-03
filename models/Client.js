@@ -71,9 +71,23 @@ clientSchema.index({ company: 1 });
 
 // Auto-generate client code
 clientSchema.pre('save', async function(next) {
-  if (this.isNew && !this.code) {
-    const count = await mongoose.model('Client').countDocuments({ company: this.company });
-    this.code = `CLI${String(count + 1).padStart(5, '0')}`;
+  if (this.isNew) {
+    if (!this.code) {
+      // Auto-generate code if not provided
+      const count = await mongoose.model('Client').countDocuments({ company: this.company });
+      this.code = `CLI${String(count + 1).padStart(5, '0')}`;
+    } else {
+      // Check if provided code already exists for this company
+      const existingClient = await mongoose.model('Client').findOne({
+        company: this.company,
+        code: this.code.toUpperCase()
+      });
+      
+      if (existingClient) {
+        const error = new Error(`Client code "${this.code}" already exists`);
+        return next(error);
+      }
+    }
   }
   next();
 });

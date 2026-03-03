@@ -62,9 +62,23 @@ supplierSchema.index({ company: 1 });
 
 // Auto-generate supplier code
 supplierSchema.pre('save', async function(next) {
-  if (this.isNew && !this.code) {
-    const count = await mongoose.model('Supplier').countDocuments({ company: this.company });
-    this.code = `SUP${String(count + 1).padStart(5, '0')}`;
+  if (this.isNew) {
+    if (!this.code) {
+      // Auto-generate code if not provided
+      const count = await mongoose.model('Supplier').countDocuments({ company: this.company });
+      this.code = `SUP${String(count + 1).padStart(5, '0')}`;
+    } else {
+      // Check if provided code already exists for this company
+      const existingSupplier = await mongoose.model('Supplier').findOne({
+        company: this.company,
+        code: this.code.toUpperCase()
+      });
+      
+      if (existingSupplier) {
+        const error = new Error(`Supplier code "${this.code}" already exists`);
+        return next(error);
+      }
+    }
   }
   next();
 });

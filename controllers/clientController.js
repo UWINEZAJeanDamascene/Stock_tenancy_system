@@ -87,6 +87,21 @@ exports.createClient = async (req, res, next) => {
       data: client
     });
   } catch (error) {
+    // Handle duplicate key error more gracefully
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(400).json({
+        success: false,
+        message: `A client with this ${field} already exists`
+      });
+    }
+    // Handle validation errors from pre-save hook
+    if (error.message && error.message.includes('already exists')) {
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
     next(error);
   }
 };
