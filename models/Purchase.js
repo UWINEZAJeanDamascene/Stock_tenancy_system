@@ -250,12 +250,14 @@ purchaseSchema.pre('save', function(next) {
     this.totalTaxA = totalTaxA;
     this.totalTaxB = totalTaxB;
     
-    this.subtotal = this.items.reduce((sum, item) => sum + item.subtotal, 0);
-    this.totalDiscount = this.items.reduce((sum, item) => sum + item.discount, 0);
+    this.subtotal = this.items ? this.items.reduce((sum, item) => sum + (item.subtotal || 0), 0) : 0;
+    this.totalDiscount = this.items ? this.items.reduce((sum, item) => sum + (item.discount || 0), 0) : 0;
     this.totalTax = totalTaxA + totalTaxB;
     this.grandTotal = this.subtotal - this.totalDiscount + this.totalTax;
     this.roundedAmount = Math.round(this.grandTotal * 100) / 100;
-    this.balance = this.roundedAmount - this.amountPaid;
+    
+    // Always calculate balance - ensure it's never undefined
+    this.balance = (this.roundedAmount || 0) - (this.amountPaid || 0);
   }
   
   // Update status based on payment

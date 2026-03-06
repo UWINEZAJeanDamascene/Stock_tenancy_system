@@ -33,5 +33,8 @@ router.put('/:id/archive', authorize('admin'), logAction('product'), archiveProd
 router.put('/:id/restore', authorize('admin'), logAction('product'), restoreProduct);
 router.get('/:id/history', getProductHistory);
 router.get('/:id/lifecycle', getProductLifecycle);
+// Barcode and QR code endpoints
+router.get('/:id/barcode', require('../controllers/productController').getProductBarcode);
+router.get('/:id/qrcode', require('../controllers/productController').getProductQRCode);
 
 module.exports = router;

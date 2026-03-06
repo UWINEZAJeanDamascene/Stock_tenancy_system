@@ -361,6 +361,10 @@ exports.recordPayment = async (req, res, next) => {
 
     purchase.amountPaid += amount;
 
+    // Explicitly recalculate balance to ensure it's correct
+    purchase.balance = purchase.grandTotal - purchase.amountPaid;
+    if (purchase.balance < 0) purchase.balance = 0;
+
     // Auto-receive if stock not yet added and payment is made
     if (!purchase.stockAdded && purchase.status === 'draft' && (paymentMethod === 'cash' || paymentMethod === 'card')) {
       // Add stock

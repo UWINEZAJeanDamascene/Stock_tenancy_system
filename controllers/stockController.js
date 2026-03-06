@@ -1,6 +1,8 @@
 const StockMovement = require('../models/StockMovement');
 const Product = require('../models/Product');
 const Supplier = require('../models/Supplier');
+const Warehouse = require('../models/Warehouse');
+const InventoryBatch = require('../models/InventoryBatch');
 
 // @desc    Get all stock movements
 // @route   GET /api/stock/movements
@@ -109,6 +111,7 @@ exports.receiveStock = async (req, res, next) => {
       batchNumber,
       lotNumber,
       expiryDate,
+      warehouse: warehouseId,
       notes
     } = req.body;
 
@@ -120,6 +123,69 @@ exports.receiveStock = async (req, res, next) => {
         success: false,
         message: 'Product not found'
       });
+    }
+
+    // Get or create default warehouse if not specified
+    let warehouse = null;
+    if (warehouseId) {
+      warehouse = await Warehouse.findOne({ _id: warehouseId, company: companyId });
+      if (!warehouse) {
+        return res.status(404).json({
+          success: false,
+          message: 'Warehouse not found'
+        });
+      }
+    } else {
+      // Try to get default warehouse
+      warehouse = await Warehouse.findOne({ company: companyId, isDefault: true });
+      // If no default, get first available
+      if (!warehouse) {
+        warehouse = await Warehouse.findOne({ company: companyId, isActive: true });
+      }
+    }
+
+    // If product tracks batches, create or update batch
+    let batch = null;
+    if (product.trackBatch || batchNumber || lotNumber) {
+      // Try to find existing batch
+      const batchQuery = {
+        company: companyId,
+        product: productId,
+        warehouse: warehouse?._id,
+        status: { $nin: ['exhausted', 'expired'] }
+      };
+      
+      if (batchNumber) batchQuery.batchNumber = batchNumber;
+      if (lotNumber) batchQuery.lotNumber = lotNumber;
+      
+      batch = await InventoryBatch.findOne(batchQuery);
+      
+      if (batch) {
+        // Add to existing batch
+        batch.quantity += quantity;
+        batch.availableQuantity += quantity;
+        batch.unitCost = unitCost || batch.unitCost;
+        batch.totalCost = batch.quantity * batch.unitCost;
+        batch.updateStatus();
+        await batch.save();
+      } else {
+        // Create new batch
+        batch = await InventoryBatch.create({
+          company: companyId,
+          product: productId,
+          warehouse: warehouse?._id,
+          quantity,
+          availableQuantity: quantity,
+          batchNumber,
+          lotNumber,
+          expiryDate,
+          unitCost: unitCost || 0,
+          totalCost: quantity * (unitCost || 0),
+          supplier: supplierId,
+          status: 'active',
+          createdBy: req.user.id
+        });
+      }
     }
 
     const previousStock = product.currentStock;
@@ -141,6 +207,7 @@ exports.receiveStock = async (req, res, next) => {
       lotNumber,
       expiryDate,
       referenceType: 'purchase_order',
+      warehouse: warehouse?._id,
       notes,
       performedBy: req.user.id,
       movementDate: new Date()
@@ -184,7 +251,11 @@ exports.receiveStock = async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: 'Stock received successfully',
-      data: movement
+      data: {
+        ...movement.toObject(),
+        warehouse: warehouse ? { _id: warehouse._id, name: warehouse.name } : null,
+        batch: batch ? { _id: batch._id, batchNumber: batch.batchNumber } : null
+      }
     });
   } catch (error) {
     next(error);

@@ -2,9 +2,10 @@ const mongoose = require('mongoose');
 
 const connectDB = async () => {
   try {
+    // Mongoose v6+ enables the new topology engine by default.
+    // Remove deprecated options to avoid driver warnings.
     const conn = await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
+      useNewUrlParser: true
     });
 
     console.log(`MongoDB Connected: ${conn.connection.host}`);

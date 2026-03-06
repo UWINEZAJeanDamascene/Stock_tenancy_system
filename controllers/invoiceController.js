@@ -4,6 +4,9 @@ const Client = require('../models/Client');
 const StockMovement = require('../models/StockMovement');
 const InvoiceReceiptMetadata = require('../models/InvoiceReceiptMetadata');
 const PDFDocument = require('pdfkit');
+const notificationService = require('../services/notificationService');
+const emailService = require('../services/emailService');
+const Company = require('../models/Company');
 
 // @desc    Get all invoices
 // @route   GET /api/invoices
@@ -149,6 +152,19 @@ exports.createInvoice = async (req, res, next) => {
     });
 
     await invoice.populate('client items.product createdBy');
+
+    // Attempt to send invoice email to client if email exists
+    // Only send if explicitly requested or if client email exists
+    const sendEmailOnCreate = req.body.sendEmail || false;
+    if (sendEmailOnCreate) {
+      try {
+        const company = await Company.findById(companyId);
+        const clientData = await Client.findById(clientId);
+        await emailService.sendInvoiceEmail(invoice, company, clientData);
+      } catch (emailErr) {
+        console.error('Invoice email error:', emailErr);
+      }
+    }
 
     res.status(201).json({
       success: true,
@@ -412,6 +428,10 @@ exports.recordPayment = async (req, res, next) => {
     });
 
     invoice.amountPaid += amount;
+
+    // Explicitly recalculate balance to ensure it's correct
+    invoice.balance = invoice.roundedAmount - invoice.amountPaid;
+    if (invoice.balance < 0) invoice.balance = 0;
 
     // Auto-confirm if stock not yet deducted and payment is made
     if (!invoice.stockDeducted && invoice.status === 'draft') {
@@ -775,6 +795,46 @@ exports.generateInvoicePDF = async (req, res, next) => {
 
     // Finalize PDF
     doc.end();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Send invoice via email
+// @route   POST /api/invoices/:id/send-email
+// @access  Private (admin, stock_manager, sales)
+exports.sendInvoiceEmail = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId })
+      .populate('client');
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        message: 'Invoice not found'
+      });
+    }
+
+    const company = await Company.findById(companyId);
+    const clientData = await Client.findById(invoice.client);
+    
+    // Check if client has email
+    const clientEmail = clientData?.contact?.email || invoice.customerEmail;
+    if (!clientEmail) {
+      return res.status(400).json({
+        success: false,
+        message: 'Client does not have an email address'
+      });
+    }
+
+    // Send the invoice email
+    await emailService.sendInvoiceEmail(invoice, company, clientData);
+
+    res.json({
+      success: true,
+      message: 'Invoice sent to ' + clientEmail
+    });
   } catch (error) {
     next(error);
   }

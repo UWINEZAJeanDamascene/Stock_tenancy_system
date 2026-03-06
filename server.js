@@ -13,6 +13,10 @@ dotenv.config();
 // Connect to MongoDB
 connectDB();
 
+// Load all models to ensure they're registered with mongoose
+require('./models/IPWhitelist');
+require('./models/Role');
+
 const app = express();
 
 // Security middleware
@@ -87,11 +91,24 @@ app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/suppliers', require('./routes/supplierRoutes'));
 app.use('/api/clients', require('./routes/clientRoutes'));
 app.use('/api/stock', require('./routes/stockRoutes'));
+app.use('/api/stock/advanced', require('./routes/advancedStockRoutes'));
 app.use('/api/quotations', require('./routes/quotationRoutes'));
 app.use('/api/invoices', require('./routes/invoiceRoutes'));
 app.use('/api/purchases', require('./routes/purchaseRoutes'));
+app.use('/api/pos', require('./routes/posRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/api/dashboard', require('./routes/dashboardRoutes'));
+app.use('/api/exchange-rates', require('./routes/exchangeRateRoutes'));
+// Advanced access control & security routes
+app.use('/api/access', require('./routes/advancedAccessRoutes'));
+// Recurring invoices & subscriptions
+app.use('/api/recurring-invoices', require('./routes/recurringInvoiceRoutes'));
+app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
+// Credit notes
+app.use('/api/credit-notes', require('./routes/creditNoteRoutes'));
+
+// Notification settings
+app.use('/api/notifications', require('./routes/notificationRoutes'));
 
 // Health check
 app.get('/health', (req, res) => {
@@ -120,6 +137,7 @@ app.get('/', (req, res) => {
       '/api/invoices',
       '/api/reports',
       '/api/dashboard',
+      '/api/exchange-rates',
       '/health'
     ]
   });
@@ -138,8 +156,43 @@ app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
+// Start recurring scheduler (non-blocking)
+try {
+  const { startScheduler } = require('./services/recurringService');
+  startScheduler();
+} catch (err) {
+  console.warn('Could not start recurring invoice scheduler', err);
+}
+
+// Start notification scheduler (payment reminders, low-stock, summaries)
+try {
+  const notify = require('./services/notificationScheduler');
+  notify.startScheduler();
+} catch (err) {
+  console.warn('Could not start recurring invoice scheduler', err);
+}
+
+const server = app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+});
+
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use.`);
+    // Try next port once
+    const fallbackPort = Number(PORT) + 1;
+    console.log(`Attempting to listen on port ${fallbackPort} instead...`);
+    server.close();
+    app.listen(fallbackPort, () => {
+      console.log(`Server running in ${process.env.NODE_ENV} mode on port ${fallbackPort}`);
+    }).on('error', (e) => {
+      console.error('Failed to bind to fallback port:', e.message);
+      process.exit(1);
+    });
+  } else {
+    console.error('Server error:', err);
+    process.exit(1);
+  }
 });
 
 module.exports = app;

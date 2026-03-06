@@ -84,14 +84,35 @@ const protect = async (req, res, next) => {
 
 // Role authorization
 const authorize = (...roles) => {
-  return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+  return async (req, res, next) => {
+    try {
+      // Check legacy single role string first
+      if (req.user && req.user.role && roles.includes(req.user.role)) return next();
+
+      // Check roles array (may be ObjectId refs or populated docs)
+      if (req.user && Array.isArray(req.user.roles) && req.user.roles.length) {
+        // If populated as objects, check name property
+        for (const r of req.user.roles) {
+          if (typeof r === 'string' && roles.includes(r)) return next();
+          if (r && typeof r === 'object' && roles.includes(r.name)) return next();
+        }
+
+        // If roles are ObjectIds, resolve their names
+        const Role = require('../models/Role');
+        const roleDocs = await Role.find({ _id: { $in: req.user.roles } }).select('name');
+        for (const rd of roleDocs) {
+          if (roles.includes(rd.name)) return next();
+        }
+      }
+
       return res.status(403).json({
         success: false,
-        message: `User role '${req.user.role}' is not authorized to access this route`
+        message: `User role '${req.user && req.user.role}' is not authorized to access this route`
       });
+    } catch (err) {
+      console.error('Authorization check error', err);
+      return res.status(500).json({ success: false, message: 'Authorization check failed' });
     }
-    next();
   };
 };
 

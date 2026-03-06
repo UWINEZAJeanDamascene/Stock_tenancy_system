@@ -203,6 +203,19 @@ const invoiceSchema = new mongoose.Schema({
     ref: 'User'
   },
   cancellationReason: String
+  ,
+  // Link to recurring template if generated automatically
+  generatedFromRecurring: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'RecurringInvoice'
+  },
+  // Credit notes applied to this invoice
+  creditNotes: [{
+    creditNoteId: { type: mongoose.Schema.Types.ObjectId, ref: 'CreditNote' },
+    creditNoteNumber: String,
+    amount: { type: Number, default: 0 },
+    appliedDate: { type: Date, default: Date.now }
+  }]
 }, {
   timestamps: true
 });
@@ -256,15 +269,16 @@ invoiceSchema.pre('save', function(next) {
     this.totalTaxB = totalTaxB;
     
     // Legacy calculations
-    this.subtotal = this.items.reduce((sum, item) => sum + item.subtotal, 0);
-    this.totalDiscount = this.items.reduce((sum, item) => sum + item.discount, 0);
+    this.subtotal = this.items ? this.items.reduce((sum, item) => sum + (item.subtotal || 0), 0) : 0;
+    this.totalDiscount = this.items ? this.items.reduce((sum, item) => sum + (item.discount || 0), 0) : 0;
     this.totalTax = totalTaxA + totalTaxB;
     this.grandTotal = this.subtotal - this.totalDiscount + this.totalTax;
     
     // Rounded amount
     this.roundedAmount = Math.round(this.grandTotal * 100) / 100;
     
-    this.balance = this.roundedAmount - this.amountPaid;
+    // Always calculate balance - ensure it's never undefined
+    this.balance = (this.roundedAmount || 0) - (this.amountPaid || 0);
   }
   
   // Update status based on payment

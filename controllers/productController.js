@@ -3,6 +3,8 @@ const StockMovement = require('../models/StockMovement');
 const Quotation = require('../models/Quotation');
 const Invoice = require('../models/Invoice');
 const Supplier = require('../models/Supplier');
+const bwipjs = require('bwip-js');
+const QRCode = require('qrcode');
 
 // @desc    Get all products
 // @route   GET /api/products
@@ -446,6 +448,93 @@ exports.getLowStockProducts = async (req, res, next) => {
       count: products.length,
       data: products
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get product barcode image (PNG)
+// @route   GET /api/products/:id/barcode
+// @access  Private
+exports.getProductBarcode = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const product = await Product.findOne({ _id: req.params.id, company: companyId });
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    const requestedType = (req.query.type || product.barcodeType || 'CODE128').toString().toUpperCase();
+    let bcid = 'code128';
+    if (requestedType === 'EAN13' || requestedType === 'EAN-13') {
+      bcid = 'ean13';
+    } else if (requestedType === 'EAN8' || requestedType === 'EAN-8') {
+      bcid = 'ean8';
+    } else if (requestedType === 'UPC') {
+      bcid = 'upca';
+    } else if (requestedType === 'CODE39') {
+      bcid = 'code39';
+    } else if (requestedType === 'ITF14') {
+      bcid = 'itf14';
+    }
+
+    // Fallback text/value
+    const text = product.barcode || product.sku || String(product._id);
+
+    // For EAN13/EAN8/UPC ensure numeric; if not, use CODE128 as fallback
+    let codeText = String(text);
+    if (['ean13', 'ean8', 'upca'].includes(bcid)) {
+      codeText = codeText.replace(/[^0-9]/g, '');
+      if (bcid === 'ean13' || bcid === 'upca') {
+        if (codeText.length < 12) codeText = codeText.padStart(12, '0');
+        if (codeText.length > 12) codeText = codeText.slice(0, 12);
+      } else if (bcid === 'ean8') {
+        if (codeText.length < 7) codeText = codeText.padStart(7, '0');
+        if (codeText.length > 7) codeText = codeText.slice(0, 7);
+      }
+    }
+
+    const png = await bwipjs.toBuffer({
+      bcid,
+      text: bcid === 'ean13' ? codeText : String(text),
+      scale: parseInt(req.query.scale || '3', 10),
+      height: parseInt(req.query.height || '10', 10),
+      includetext: true,
+      textxalign: 'center'
+    });
+
+    res.set('Content-Type', 'image/png');
+    res.send(png);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get product QR code image (PNG)
+// @route   GET /api/products/:id/qrcode
+// @access  Private
+exports.getProductQRCode = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const product = await Product.findOne({ _id: req.params.id, company: companyId });
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    // Build a default URL for product lookup. Prefer FRONTEND_BASE_URL env, else origin.
+    const frontendBase = process.env.FRONTEND_BASE_URL || req.get('origin') || '';
+    const payloadUrl = frontendBase ? `${frontendBase.replace(/\/$/, '')}/products/${product._id}` : `product:${product._id}`;
+
+    const pngBuffer = await QRCode.toBuffer(payloadUrl, {
+      type: 'png',
+      width: parseInt(req.query.width || '300', 10),
+      margin: 1
+    });
+
+    res.set('Content-Type', 'image/png');
+    res.send(pngBuffer);
   } catch (error) {
     next(error);
   }

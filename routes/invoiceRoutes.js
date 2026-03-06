@@ -12,7 +12,8 @@ const {
   saveReceiptMetadata,
   getClientInvoices,
   getProductInvoices,
-  generateInvoicePDF
+  generateInvoicePDF,
+  sendInvoiceEmail
 } = require('../controllers/invoiceController');
 const { protect, authorize } = require('../middleware/auth');
 const logAction = require('../middleware/logAction');
@@ -42,6 +43,9 @@ router.post('/:id/receipt-metadata', authorize('admin', 'stock_manager'), saveRe
 
 // PDF generation
 router.get('/:id/pdf', generateInvoicePDF);
+
+// Send invoice via email
+router.post('/:id/send-email', authorize('admin', 'sales'), logAction('invoice'), sendInvoiceEmail);
 
 // Client and product specific routes
 router.get('/client/:clientId', getClientInvoices);

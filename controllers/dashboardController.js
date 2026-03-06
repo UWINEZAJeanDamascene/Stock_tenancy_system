@@ -4,6 +4,7 @@ const Quotation = require('../models/Quotation');
 const StockMovement = require('../models/StockMovement');
 const Client = require('../models/Client');
 const ActionLog = require('../models/ActionLog');
+const CreditNote = require('../models/CreditNote');
 
 // @desc    Get dashboard statistics
 // @route   GET /api/dashboard/stats
@@ -70,6 +71,12 @@ exports.getDashboardStats = async (req, res, next) => {
       }}
     ]);
 
+    // Subtract credit notes issued this month from sales totals to reflect net sales
+    const monthlyCreditNotes = await CreditNote.aggregate([
+      { $match: { company: companyId, issueDate: { $gte: startOfMonth }, status: { $ne: 'draft' } } },
+      { $group: { _id: null, totalCredits: { $sum: '$grandTotal' } } }
+    ]);
+
     const yearlyInvoices = await Invoice.aggregate([
       { $match: { company: companyId, invoiceDate: { $gte: startOfYear } } },
       { $group: { 
@@ -78,6 +85,12 @@ exports.getDashboardStats = async (req, res, next) => {
         paid: { $sum: '$amountPaid' },
         count: { $sum: 1 }
       }}
+    ]);
+
+    // Subtract credit notes for the year
+    const yearlyCreditNotes = await CreditNote.aggregate([
+      { $match: { company: companyId, issueDate: { $gte: startOfYear }, status: { $ne: 'draft' } } },
+      { $group: { _id: null, totalCredits: { $sum: '$grandTotal' } } }
     ]);
 
     // Quotation stats
@@ -104,12 +117,13 @@ exports.getDashboardStats = async (req, res, next) => {
           pending: pendingInvoices,
           monthly: {
             count: monthlyInvoices[0]?.count || 0,
-            total: monthlyInvoices[0]?.total || 0,
+            // subtract credit notes to show net sales
+            total: (monthlyInvoices[0]?.total || 0) - (monthlyCreditNotes[0]?.totalCredits || 0),
             paid: monthlyInvoices[0]?.paid || 0
           },
           yearly: {
             count: yearlyInvoices[0]?.count || 0,
-            total: yearlyInvoices[0]?.total || 0,
+            total: (yearlyInvoices[0]?.total || 0) - (yearlyCreditNotes[0]?.totalCredits || 0),
             paid: yearlyInvoices[0]?.paid || 0
           }
         },

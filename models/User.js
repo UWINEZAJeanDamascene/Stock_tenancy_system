@@ -30,10 +30,14 @@ const userSchema = new mongoose.Schema({
     }
   },
   role: {
+    // Legacy single-role kept for backward compatibility. Prefer `roles` array of Role refs.
     type: String,
     enum: ['platform_admin', 'admin', 'stock_manager', 'sales', 'viewer'],
     default: 'viewer'
   },
+  roles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Role' }],
+  // Department-based access
+  department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
   isActive: {
     type: Boolean,
     default: true
@@ -58,6 +62,13 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   }
+  ,
+  // Two-factor authentication (TOTP)
+  twoFAEnabled: { type: Boolean, default: false },
+  twoFASecret: { type: String, select: false, default: null },
+  twoFAConfirmed: { type: Boolean, default: false },
+  // Optional per-user IP whitelist (array of IP strings)
+  ipWhitelist: [{ type: String }]
 }, {
   timestamps: true
 });

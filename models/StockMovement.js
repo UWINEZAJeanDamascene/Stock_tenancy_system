@@ -21,7 +21,7 @@ const stockMovementSchema = new mongoose.Schema({
     type: String,
     enum: [
       'purchase', 'sale', 'return', 'damage', 'loss', 
-      'theft', 'expired', 'transfer', 'correction', 'initial_stock'
+      'theft', 'expired', 'transfer_in', 'transfer_out', 'correction', 'initial_stock'
     ],
     required: true
   },
@@ -50,12 +50,16 @@ const stockMovementSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Supplier'
   },
+  warehouse: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Warehouse'
+  },
   batchNumber: String,
   lotNumber: String,
   expiryDate: Date,
   referenceType: {
     type: String,
-    enum: ['purchase', 'purchase_order', 'invoice', 'adjustment', 'return', 'other']
+    enum: ['purchase', 'purchase_order', 'invoice', 'adjustment', 'return', 'credit_note', 'other']
   },
   referenceNumber: String,
   referenceDocument: {
@@ -64,7 +68,7 @@ const stockMovementSchema = new mongoose.Schema({
   },
   referenceModel: {
     type: String,
-    enum: ['Purchase', 'Invoice', 'PurchaseOrder', 'StockAdjustment']
+    enum: ['Purchase', 'Invoice', 'PurchaseOrder', 'StockAdjustment', 'CreditNote']
   },
   notes: String,
   performedBy: {

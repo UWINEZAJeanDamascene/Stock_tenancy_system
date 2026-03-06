@@ -11,8 +11,12 @@ const logAction = (module) => {
       if (res.statusCode >= 200 && res.statusCode < 300) {
         const action = `${req.method} ${req.originalUrl}`;
         
+        // Get company from user object (set by auth middleware)
+        const companyId = req.user?.company?._id || req.user?.company;
+        
         ActionLog.create({
           user: req.user?._id,
+          company: companyId,
           action,
           module,
           targetId: req.params.id,

@@ -40,6 +40,17 @@ const productSchema = new mongoose.Schema({
     uppercase: true,
     trim: true
   },
+  // Barcode fields
+  barcode: {
+    type: String,
+    trim: true,
+    default: null
+  },
+  barcodeType: {
+    type: String,
+    enum: ['CODE128', 'EAN13', 'EAN8', 'UPC', 'CODE39', 'ITF14', 'QR', 'NONE'],
+    default: 'CODE128'
+  },
   description: {
     type: String,
     trim: true
@@ -83,6 +94,34 @@ const productSchema = new mongoose.Schema({
   isArchived: {
     type: Boolean,
     default: false
+  },
+  // Advanced inventory tracking flags
+  trackBatch: {
+    type: Boolean,
+    default: false
+  },
+  trackSerialNumbers: {
+    type: Boolean,
+    default: false
+  },
+  // Reorder settings
+  reorderPoint: {
+    type: Number,
+    min: 0
+  },
+  reorderQuantity: {
+    type: Number,
+    min: 0
+  },
+  // Multiple warehouse support - store default warehouse
+  defaultWarehouse: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Warehouse'
+  },
+  // Preferred supplier for reordering
+  preferredSupplier: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Supplier'
   },
   history: [productHistorySchema],
   createdBy: {
