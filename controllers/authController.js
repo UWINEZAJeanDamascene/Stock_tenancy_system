@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Company = require('../models/Company');
 const { notifyPasswordChanged, notifyFailedLogin } = require('../services/notificationHelper');
+const sessionService = require('../services/sessionService');
 
 // Generate JWT Token with company and role info
 const generateToken = (id, companyId, role) => {
@@ -51,6 +52,15 @@ exports.login = async (req, res, next) => {
       const token = generateToken(user._id, null, user.role);
       
       const userWithoutPassword = user.toJSON();
+
+      // Create Redis session
+      await sessionService.createSession(
+        user._id.toString(),
+        null,
+        user.role,
+        token,
+        { email: user.email, name: user.name }
+      );
       
       return res.json({
         success: true,
@@ -112,6 +122,15 @@ exports.login = async (req, res, next) => {
 
     // Remove password from user object
     const userWithoutPassword = user.toJSON();
+
+    // Create Redis session
+    await sessionService.createSession(
+      user._id.toString(),
+      user.company._id.toString(),
+      user.role,
+      token,
+      { email: user.email, name: user.name, companyName: user.company.name }
+    );
 
     res.json({
       success: true,
@@ -197,6 +216,19 @@ exports.updatePassword = async (req, res, next) => {
 // @access  Private
 exports.logout = async (req, res, next) => {
   try {
+    // Get token from header
+    const token = req.headers.authorization?.split(' ')[1];
+
+    // Delete session from Redis
+    if (req.user) {
+      await sessionService.deleteSession(req.user._id.toString(), token);
+    }
+
+    // Blacklist the token
+    if (token) {
+      await sessionService.blacklistToken(token);
+    }
+
     res.json({
       success: true,
       message: 'Logged out successfully'

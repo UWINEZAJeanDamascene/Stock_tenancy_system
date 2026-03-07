@@ -3,9 +3,13 @@ const dotenv = require('dotenv');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
 const connectDB = require('./config/database');
 const errorHandler = require('./middleware/errorHandler');
+
+// Redis caching layer
+const { redisClient } = require('./config/redis');
+const { createRateLimiters } = require('./middleware/redisRateLimiter');
+const { sessionMiddleware } = require('./middleware/cacheMiddleware');
 
 // Load environment variables
 dotenv.config();
@@ -23,12 +27,10 @@ const app = express();
 // Security middleware
 app.use(helmet());
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
-});
-app.use('/api/', limiter);
+// Rate limiting with Redis (distributed)
+const rateLimiters = createRateLimiters();
+app.use('/api/auth', rateLimiters.auth);
+app.use('/api/', rateLimiters.api);
 
 // CORS - Allow Vercel frontend and localhost for development
 const corsOptions = {
@@ -79,6 +81,9 @@ app.use(cors(corsOptions));
 // Body parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Session management with Redis
+app.use(sessionMiddleware);
 
 // Logging
 if (process.env.NODE_ENV === 'development') {
