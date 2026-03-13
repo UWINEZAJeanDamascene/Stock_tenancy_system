@@ -23,6 +23,11 @@ class JournalService {
       notes = ''
     } = options;
 
+    // Normalize and validate companyId/userId
+    if (userId && typeof userId === 'object' && userId._id) userId = userId._id;
+    if (!companyId) throw new Error('Missing companyId when creating journal entry');
+    if (!userId) throw new Error('Missing userId when creating journal entry');
+
     // Validate lines
     if (lines.length < 2) {
       throw new Error('Journal entry must have at least 2 lines');
@@ -41,7 +46,9 @@ class JournalService {
     const entryNumber = await JournalEntry.generateEntryNumber(companyId);
 
     // Create entry
-    const entry = await JournalEntry.create({
+    let entry;
+    try {
+      entry = await JournalEntry.create({
       company: companyId,
       entryNumber,
       date,
@@ -57,7 +64,12 @@ class JournalService {
       postedBy: userId,
       status: 'posted',
       notes
-    });
+      });
+    } catch (err) {
+      const enhanced = new Error(`JournalService.createEntry failed: ${err.message}`);
+      enhanced.cause = err;
+      throw enhanced;
+    }
 
     return entry;
   }

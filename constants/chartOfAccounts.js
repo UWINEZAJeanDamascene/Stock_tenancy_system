@@ -5,9 +5,12 @@ const CHART_OF_ACCOUNTS = {
   // ── ASSETS (1000-1999) ──────────
   // Current Assets
   '1000': { name: 'Cash in Hand', type: 'asset', subtype: 'current', normalBalance: 'debit' },
+  '1050': { name: 'Petty Cash', type: 'asset', subtype: 'current', normalBalance: 'debit' },
   '1100': { name: 'Cash at Bank', type: 'asset', subtype: 'current', normalBalance: 'debit' },
   '1200': { name: 'MTN MoMo', type: 'asset', subtype: 'current', normalBalance: 'debit' },
+  '1250': { name: 'Employee Advances', type: 'asset', subtype: 'current', normalBalance: 'debit' },
   '1300': { name: 'Accounts Receivable', type: 'asset', subtype: 'current', normalBalance: 'debit' },
+  '1350': { name: 'Other Receivables', type: 'asset', subtype: 'current', normalBalance: 'debit' },
   '1400': { name: 'Inventory', type: 'asset', subtype: 'current', normalBalance: 'debit' },
   '1500': { name: 'VAT Receivable', type: 'asset', subtype: 'current', normalBalance: 'debit' },
   '1600': { name: 'Prepaid Expenses', type: 'asset', subtype: 'current', normalBalance: 'debit' },
@@ -45,20 +48,22 @@ const CHART_OF_ACCOUNTS = {
   '3000': { name: 'Share Capital', type: 'equity', subtype: 'capital', normalBalance: 'credit' },
   '3100': { name: 'Retained Earnings', type: 'equity', subtype: 'retained', normalBalance: 'credit' },
   '3200': { name: 'Current Period Profit', type: 'equity', subtype: 'profit', normalBalance: 'credit' },
-  '3300': { name: 'Owner Drawings', type: 'equity', subtype: 'drawings', normalBalance: 'debit' },
+  '3300': { name: 'Dividends Paid', type: 'equity', subtype: 'dividends', normalBalance: 'debit' },
 
   // ── REVENUE (4000-4999) ────────
   '4000': { name: 'Sales Revenue', type: 'revenue', subtype: 'operating', normalBalance: 'credit' },
   '4100': { name: 'Sales Returns', type: 'revenue', subtype: 'contra', normalBalance: 'debit' },
   '4200': { name: 'Other Income', type: 'revenue', subtype: 'non_operating', normalBalance: 'credit' },
   '4300': { name: 'Interest Income', type: 'revenue', subtype: 'non_operating', normalBalance: 'credit' },
-  '4400': { name: 'Gain on Asset Disposal', type: 'revenue', subtype: 'non_operating', normalBalance: 'credit' },
+  '4250': { name: 'Gain on Asset Disposal', type: 'revenue', subtype: 'non_operating', normalBalance: 'credit' },
+  '4400': { name: 'Gain on Asset Disposal (legacy)', type: 'revenue', subtype: 'non_operating', normalBalance: 'credit' },
 
   // ── COST OF GOODS SOLD (5000-5099) ────────
   '5000': { name: 'Cost of Goods Sold', type: 'expense', subtype: 'cogs', normalBalance: 'debit' },
   '5100': { name: 'Purchases', type: 'expense', subtype: 'cogs', normalBalance: 'debit' },
+  '5150': { name: 'Stock Adjustment Loss', type: 'expense', subtype: 'cogs', normalBalance: 'debit' },
   '5200': { name: 'Purchase Returns', type: 'expense', subtype: 'contra', normalBalance: 'credit' },
-  '5300': { name: ' Freight In', type: 'expense', subtype: 'cogs', normalBalance: 'debit' },
+  '5300': { name: 'Freight In', type: 'expense', subtype: 'cogs', normalBalance: 'debit' },
 
   // ── OPERATING EXPENSES (5100-6999) ────────
   '5400': { name: 'Salaries & Wages', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
@@ -68,12 +73,18 @@ const CHART_OF_ACCOUNTS = {
   '5700': { name: 'Transport & Delivery', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
   '5800': { name: 'Marketing & Advertising', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
   '5900': { name: 'Depreciation Expense', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
+  '5900': { name: 'Depreciation Expense', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
   '6000': { name: 'Interest Expense', type: 'expense', subtype: 'financial', normalBalance: 'debit' },
   '6100': { name: 'Other Expenses', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
   '6200': { name: 'Bank Charges', type: 'expense', subtype: 'financial', normalBalance: 'debit' },
-  '6300': { name: 'Bad Debt Expense', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
+  '6300': { name: 'Bad Debt Expense (legacy)', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
   '6400': { name: 'Corporate Tax', type: 'expense', subtype: 'tax', normalBalance: 'debit' },
-  '6500': { name: 'Loss on Asset Disposal', type: 'expense', subtype: 'non_operating', normalBalance: 'debit' },
+  '6500': { name: 'Loss on Asset Disposal (legacy)', type: 'expense', subtype: 'non_operating', normalBalance: 'debit' },
+
+  // Additional operating expense codes requested
+  '5250': { name: 'Bad Debt Expense', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
+  '6050': { name: 'Loss on Asset Disposal', type: 'expense', subtype: 'non_operating', normalBalance: 'debit' },
+  '6150': { name: 'Withholding Tax Expense', type: 'expense', subtype: 'tax', normalBalance: 'debit' },
   
   // ── SPECIAL ACCOUNTS ──────────
   '7100': { name: 'Stock Adjustment', type: 'asset', subtype: 'current', normalBalance: 'debit' },
@@ -117,8 +128,11 @@ const DEFAULT_ACCOUNTS = {
   
   // Cash/Bank
   cashInHand: '1000',
+  pettyCash: '1050',
   cashAtBank: '1100',
   mtnMoMo: '1200',
+  employeeAdvances: '1250',
+  otherReceivables: '1350',
   
   // VAT
   vatReceivable: '1500',
@@ -137,7 +151,8 @@ const DEFAULT_ACCOUNTS = {
   interestExpense: '6000',
   otherExpenses: '6100',
   bankCharges: '6200',
-  badDebt: '6300',
+  badDebt: '5250',
+  badDebtLegacy: '6300',
   
   // Assets
   equipment: '1700',
@@ -163,18 +178,23 @@ const DEFAULT_ACCOUNTS = {
   rssbPayable: '2300',
   withholdingTaxPayable: '2500',
   corporateTax: '6400',
+  withholdingTaxExpense: '6150',
   
   // Equity
   shareCapital: '3000',
   retainedEarnings: '3100',
   currentProfit: '3200',
   ownerDrawings: '3300',
+  dividendsPaid: '3300',
   
   // Other
   otherIncome: '4200',
   interestIncome: '4300',
-  gainOnDisposal: '4400',
+  gainOnDisposal: '4250',
   lossOnDisposal: '6500',
+
+  // COGS / adjustments
+  stockAdjustmentLoss: '5150',
   
   // Prepaid
   prepaidExpenses: '1600',
