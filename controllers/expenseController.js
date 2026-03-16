@@ -75,6 +75,7 @@ exports.getExpense = async (req, res, next) => {
 exports.createExpense = async (req, res, next) => {
   try {
     const companyId = req.user.company._id;
+    const { bankAccountId, paid, paymentMethod } = req.body;
     
     const expense = new Expense({
       ...req.body,
@@ -83,6 +84,77 @@ exports.createExpense = async (req, res, next) => {
     });
     
     await expense.save();
+    
+    // If expense is paid immediately, create journal entry and bank transaction
+    if (paid && paymentMethod) {
+      const bankPaymentMethods = ['bank_transfer', 'cheque', 'mobile_money'];
+      let bankAccountCode = null;
+      let bankAccount = null;
+      
+      // Get bank account info if needed
+      if (bankAccountId && bankPaymentMethods.includes(paymentMethod)) {
+        try {
+          bankAccount = await BankAccount.findOne({
+            _id: bankAccountId,
+            company: companyId,
+            isActive: true
+          });
+          if (bankAccount) {
+            bankAccountCode = bankAccount.accountCode;
+          }
+        } catch (err) {
+          console.error('Error fetching bank account:', err);
+        }
+      }
+      
+      // Create journal entry for expense payment
+      try {
+        await JournalService.createExpenseEntry(companyId, req.user.id, {
+          _id: expense._id,
+          description: expense.description || expense.type,
+          date: expense.expenseDate || new Date(),
+          amount: expense.amount,
+          vatAmount: expense.vatAmount || 0,
+          category: expense.type,
+          paymentMethod: paymentMethod,
+          bankAccountCode: bankAccountCode
+        });
+      } catch (journalError) {
+        console.error('Error creating journal entry for expense:', journalError);
+      }
+      
+      // Create bank transaction if payment method requires it
+      if (bankAccount && bankPaymentMethods.includes(paymentMethod)) {
+        try {
+          const currentBalance = bankAccount.currentBalance;
+          
+          const transaction = new BankTransaction({
+            company: companyId,
+            account: bankAccount._id,
+            type: 'withdrawal',
+            amount: expense.amount,
+            balanceAfter: currentBalance - expense.amount,
+            description: `Expense paid: ${expense.description || expense.type}`,
+            date: new Date(),
+            referenceNumber: expense.reference || '',
+            paymentMethod: paymentMethod,
+            status: 'completed',
+            reference: expense._id,
+            referenceType: 'Expense',
+            createdBy: req.user._id,
+            notes: `Payment for expense: ${expense.description || expense.type}`
+          });
+          
+          await transaction.save();
+          
+          // Update bank account balance
+          bankAccount.currentBalance = currentBalance - expense.amount;
+          await bankAccount.save();
+        } catch (bankError) {
+          console.error('Error creating bank transaction:', bankError);
+        }
+      }
+    }
     
     res.status(201).json({
       success: true,
@@ -115,6 +187,25 @@ exports.updateExpense = async (req, res, next) => {
     // Check if expense is being marked as paid with bank transfer
     const isBeingPaid = updateData.paid === true && !expense.paid;
     const paymentMethod = updateData.paymentMethod;
+    const bankPaymentMethods = ['bank_transfer', 'cheque', 'mobile_money'];
+    
+    // Get bank account info if needed for journal entry and bank transaction
+    let bankAccount = null;
+    let bankAccountCode = null;
+    if (bankAccountId && bankPaymentMethods.includes(paymentMethod)) {
+      try {
+        bankAccount = await BankAccount.findOne({
+          _id: bankAccountId,
+          company: companyId,
+          isActive: true
+        });
+        if (bankAccount) {
+          bankAccountCode = bankAccount.accountCode;
+        }
+      } catch (err) {
+        console.error('Error fetching bank account:', err);
+      }
+    }
     
     Object.assign(expense, updateData);
     await expense.save();
@@ -130,7 +221,8 @@ exports.updateExpense = async (req, res, next) => {
           amount: expense.amount,
           vatAmount: expense.vatAmount || 0,
           category: expense.type,
-          paymentMethod: expense.paymentMethod
+          paymentMethod: expense.paymentMethod,
+          bankAccountCode: bankAccountCode
         });
       } catch (journalError) {
         console.error('Error creating journal entry for expense:', journalError);
@@ -138,45 +230,37 @@ exports.updateExpense = async (req, res, next) => {
       }
     }
     
-    // Create bank transaction if expense is being marked as paid with bank transfer
+    // Create bank transaction if expense is being marked as paid with bank transfer, cheque, or mobile money
     let bankTransaction = null;
-    if (isBeingPaid && paymentMethod === 'bank_transfer' && bankAccountId) {
+    if (isBeingPaid && bankPaymentMethods.includes(paymentMethod) && bankAccount) {
       try {
-        const bankAccount = await BankAccount.findOne({
-          _id: bankAccountId,
+        const currentBalance = bankAccount.currentBalance;
+        
+        // Create withdrawal transaction (debit) for expense payment
+        const transaction = new BankTransaction({
           company: companyId,
-          isActive: true
+          account: bankAccount._id,
+          type: 'withdrawal',
+          amount: expense.amount,
+          balanceAfter: currentBalance - expense.amount,
+          description: `Expense paid: ${expense.description || expense.type}`,
+          date: new Date(),
+          referenceNumber: expense.reference || '',
+          paymentMethod: paymentMethod,
+          status: 'completed',
+          reference: expense._id,
+          referenceType: 'Expense',
+          createdBy: req.user._id,
+          notes: `Payment for expense: ${expense.description || expense.type}`
         });
         
-        if (bankAccount) {
-          const currentBalance = bankAccount.currentBalance;
-          
-          // Create withdrawal transaction (debit) for expense payment
-          const transaction = new BankTransaction({
-            company: companyId,
-            account: bankAccount._id,
-            type: 'withdrawal',
-            amount: expense.amount,
-            balanceAfter: currentBalance - expense.amount,
-            description: `Expense paid: ${expense.description || expense.type}`,
-            date: new Date(),
-            referenceNumber: expense.reference || '',
-            paymentMethod: 'bank_transfer',
-            status: 'completed',
-            reference: expense._id,
-            referenceType: 'Expense',
-            createdBy: req.user._id,
-            notes: `Payment for expense: ${expense.description || expense.type}`
-          });
-          
-          await transaction.save();
-          
-          // Update bank account balance
-          bankAccount.currentBalance = currentBalance - expense.amount;
-          await bankAccount.save();
-          
-          bankTransaction = transaction;
-        }
+        await transaction.save();
+        
+        // Update bank account balance
+        bankAccount.currentBalance = currentBalance - expense.amount;
+        await bankAccount.save();
+        
+        bankTransaction = transaction;
       } catch (bankError) {
         console.error('Error creating bank transaction:', bankError);
       }

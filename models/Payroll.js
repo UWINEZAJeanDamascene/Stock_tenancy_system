@@ -41,7 +41,8 @@ const payrollSchema = new mongoose.Schema({
   // Deductions
   deductions: {
     paye: { type: Number, default: 0 },           // Pay As You Earn (Income Tax)
-    rssbEmployee: { type: Number, default: 0 },   // 3% Employee Social Security
+    rssbEmployeePension: { type: Number, default: 0 },   // 6% Employee Pension (RSSB)
+    rssbEmployeeMaternity: { type: Number, default: 0 },  // 0.3% Employee Maternity (RSSB)
     healthInsurance: { type: Number, default: 0 },
     otherDeductions: { type: Number, default: 0 },
     loanDeductions: { type: Number, default: 0 },
@@ -52,10 +53,11 @@ const payrollSchema = new mongoose.Schema({
   // Net Pay
   netPay: { type: Number, default: 0 },
   
-  // Rwanda-Specific Contributions
+  // Rwanda-Specific Contributions (Employer)
   contributions: {
-    rssbEmployer: { type: Number, default: 0 },   // 5% Employer Social Security
-    maternity: { type: Number, default: 0 }        // 0.6% Maternity
+    rssbEmployerPension: { type: Number, default: 0 },   // 6% Employer Pension (RSSB)
+    rssbEmployerMaternity: { type: Number, default: 0 },  // 0.3% Employer Maternity (RSSB)
+    occupationalHazard: { type: Number, default: 0 }     // 2% Occupational Hazard (RSSB)
   },
   
   // Payroll Period
@@ -103,68 +105,100 @@ const payrollSchema = new mongoose.Schema({
 
 // Rwanda Tax Calculation Functions
 payrollSchema.statics.calculatePAYE = function(grossSalary) {
-  // PAYE Progressive Rates (Rwanda)
-  // 0 - 30,000: 0%
-  // 30,001 - 100,000: 20%
-  // Above 100,000: 30%
+  // PAYE Progressive Rates (Rwanda) - Updated 2025
+  // 0 - 60,000: 0%
+  // 60,001 - 100,000: 10%
+  // 100,001 - 200,000: 20%
+  // Above 200,000: 30%
   
   let paye = 0;
   const taxableAmount = grossSalary;
   
-  if (taxableAmount <= 30000) {
+  if (taxableAmount <= 60000) {
     paye = 0;
   } else if (taxableAmount <= 100000) {
-    paye = (taxableAmount - 30000) * 0.20;
+    // 10% on amount above 60,000
+    paye = (taxableAmount - 60000) * 0.10;
+  } else if (taxableAmount <= 200000) {
+    // 10% on first 40k above 60k = 4,000
+    // 20% on amount above 100,000
+    paye = 4000 + (taxableAmount - 100000) * 0.20;
   } else {
-    paye = (100000 - 30000) * 0.20 + (taxableAmount - 100000) * 0.30;
+    // 10% on first 40k = 4,000
+    // 20% on next 100k = 20,000
+    // 30% on amount above 200,000
+    paye = 4000 + 20000 + (taxableAmount - 200000) * 0.30;
   }
   
   return Math.round(paye * 100) / 100;
 };
 
-payrollSchema.statics.calculateRSSBEmployee = function(grossSalary) {
-  // RSSB Employee: 3% of gross
-  return Math.round(grossSalary * 0.03 * 100) / 100;
+payrollSchema.statics.calculateRSSBEmployeePension = function(grossSalary) {
+  // RSSB Employee Pension: 6% of gross (2025 - doubled from 3%)
+  // Transport allowance is included in contribution base
+  return Math.round(grossSalary * 0.06 * 100) / 100;
 };
 
-payrollSchema.statics.calculateRSSBEmployer = function(grossSalary) {
-  // RSSB Employer: 5% of gross
-  return Math.round(grossSalary * 0.05 * 100) / 100;
+payrollSchema.statics.calculateRSSBEmployeeMaternity = function(grossSalary) {
+  // RSSB Employee Maternity: 0.3% of gross
+  return Math.round(grossSalary * 0.003 * 100) / 100;
 };
 
-payrollSchema.statics.calculateMaternity = function(grossSalary) {
-  // Maternity: 0.6% of gross
-  return Math.round(grossSalary * 0.006 * 100) / 100;
+payrollSchema.statics.calculateRSSBEmployerPension = function(grossSalary) {
+  // RSSB Employer Pension: 6% of gross (2025 - increased from 5%)
+  // Transport allowance is included in contribution base
+  return Math.round(grossSalary * 0.06 * 100) / 100;
+};
+
+payrollSchema.statics.calculateRSSBEmployerMaternity = function(grossSalary) {
+  // RSSB Employer Maternity: 0.3% of gross
+  return Math.round(grossSalary * 0.003 * 100) / 100;
+};
+
+payrollSchema.statics.calculateOccupationalHazard = function(grossSalary) {
+  // Occupational Hazard: 2% of gross (employer only)
+  return Math.round(grossSalary * 0.02 * 100) / 100;
 };
 
 payrollSchema.statics.calculatePayroll = function(salaryData) {
   const { basicSalary, transportAllowance = 0, housingAllowance = 0, otherAllowances = 0 } = salaryData;
   
-  // Calculate Gross Salary
+  // Calculate Gross Salary (includes all allowances)
+  // Note: Transport allowance is now included in contribution base (2025)
   const grossSalary = basicSalary + transportAllowance + housingAllowance + otherAllowances;
   
-  // Calculate Deductions
+  // Calculate Employee Deductions
   const paye = this.calculatePAYE(grossSalary);
-  const rssbEmployee = this.calculateRSSBEmployee(grossSalary);
-  const rssbEmployer = this.calculateRSSBEmployer(grossSalary);
-  const maternity = this.calculateMaternity(grossSalary);
+  const rssbEmployeePension = this.calculateRSSBEmployeePension(grossSalary);
+  const rssbEmployeeMaternity = this.calculateRSSBEmployeeMaternity(grossSalary);
   
-  // Total Deductions (Employee portion)
-  const totalDeductions = paye + rssbEmployee;
+  // Total Employee Deductions
+  const totalDeductions = paye + rssbEmployeePension + rssbEmployeeMaternity;
   
   // Calculate Net Pay
   const netPay = grossSalary - totalDeductions;
+  
+  // Calculate Employer Contributions
+  const rssbEmployerPension = this.calculateRSSBEmployerPension(grossSalary);
+  const rssbEmployerMaternity = this.calculateRSSBEmployerMaternity(grossSalary);
+  const occupationalHazard = this.calculateOccupationalHazard(grossSalary);
+  
+  // Total Employer Cost
+  const totalEmployerCost = grossSalary + rssbEmployerPension + rssbEmployerMaternity + occupationalHazard;
   
   return {
     grossSalary: Math.round(grossSalary * 100) / 100,
     deductions: {
       paye: Math.round(paye * 100) / 100,
-      rssbEmployee: Math.round(rssbEmployee * 100) / 100,
+      rssbEmployeePension: Math.round(rssbEmployeePension * 100) / 100,
+      rssbEmployeeMaternity: Math.round(rssbEmployeeMaternity * 100) / 100,
       totalDeductions: Math.round(totalDeductions * 100) / 100
     },
     contributions: {
-      rssbEmployer: Math.round(rssbEmployer * 100) / 100,
-      maternity: Math.round(maternity * 100) / 100
+      rssbEmployerPension: Math.round(rssbEmployerPension * 100) / 100,
+      rssbEmployerMaternity: Math.round(rssbEmployerMaternity * 100) / 100,
+      occupationalHazard: Math.round(occupationalHazard * 100) / 100,
+      totalEmployerCost: Math.round(totalEmployerCost * 100) / 100
     },
     netPay: Math.round(netPay * 100) / 100
   };

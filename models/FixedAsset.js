@@ -69,6 +69,24 @@ const fixedAssetSchema = new mongoose.Schema({
   serialNumber: String,
   notes: String,
   
+  // Payment method for asset purchase (used for journal entry)
+  paymentMethod: {
+    type: String,
+    enum: ['cash', 'bank_transfer', 'cheque', 'mobile_money', 'bank'],
+    default: 'bank_transfer'
+  },
+  bankAccountCode: {
+    type: String,
+    default: ''
+  },
+  
+  // Stored accumulated depreciation (updated when depreciation journal entries are created)
+  accumulatedDepreciation: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  
   // Disposal details
   disposalDate: {
     type: Date
@@ -155,11 +173,13 @@ function _daysUsed(startDate, endDate, refDate) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ACCUMULATED DEPRECIATION (Balance Sheet)
 //
-// Accrues DAILY from the 1st of the purchase month up to today (or end of
-// useful life if the asset is already fully depreciated).
-// This means the Balance Sheet value changes every single day.
+// The stored accumulatedDepreciation field holds the value that has been
+// posted via journal entries from "Run Depreciation". This is the source of
+// truth for the balance sheet.
 // ─────────────────────────────────────────────────────────────────────────────
-fixedAssetSchema.virtual('accumulatedDepreciation').get(function() {
+
+// Virtual: calculated accumulated depreciation for reference (from purchase date to now)
+fixedAssetSchema.virtual('calculatedAccumulatedDepreciation').get(function() {
   if (!this.purchaseDate || !this.purchaseCost) return 0;
 
   const now        = new Date();

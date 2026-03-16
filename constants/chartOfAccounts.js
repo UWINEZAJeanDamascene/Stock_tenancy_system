@@ -61,9 +61,10 @@ const CHART_OF_ACCOUNTS = {
   // ── COST OF GOODS SOLD (5000-5099) ────────
   '5000': { name: 'Cost of Goods Sold', type: 'expense', subtype: 'cogs', normalBalance: 'debit' },
   '5100': { name: 'Purchases', type: 'expense', subtype: 'cogs', normalBalance: 'debit' },
+  '5110': { name: 'Freight In', type: 'expense', subtype: 'cogs', normalBalance: 'debit' },
   '5150': { name: 'Stock Adjustment Loss', type: 'expense', subtype: 'cogs', normalBalance: 'debit' },
   '5200': { name: 'Purchase Returns', type: 'expense', subtype: 'contra', normalBalance: 'credit' },
-  '5300': { name: 'Freight In', type: 'expense', subtype: 'cogs', normalBalance: 'debit' },
+  '5300': { name: 'Salaries & Wages', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
 
   // ── OPERATING EXPENSES (5100-6999) ────────
   '5400': { name: 'Salaries & Wages', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
@@ -71,9 +72,8 @@ const CHART_OF_ACCOUNTS = {
   '5500': { name: 'Rent', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
   '5600': { name: 'Utilities', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
   '5700': { name: 'Transport & Delivery', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
-  '5800': { name: 'Marketing & Advertising', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
-  '5900': { name: 'Depreciation Expense', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
-  '5900': { name: 'Depreciation Expense', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
+  '5800': { name: 'Depreciation Expense', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
+  '5850': { name: 'Marketing & Advertising', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
   '6000': { name: 'Interest Expense', type: 'expense', subtype: 'financial', normalBalance: 'debit' },
   '6100': { name: 'Other Expenses', type: 'expense', subtype: 'operating', normalBalance: 'debit' },
   '6200': { name: 'Bank Charges', type: 'expense', subtype: 'financial', normalBalance: 'debit' },
@@ -119,7 +119,7 @@ const DEFAULT_ACCOUNTS = {
   purchases: '5100',
   purchaseReturns: '5200',
   accountsPayable: '2000',
-  freightIn: '5300',
+  freightIn: '5110',
   
   // Inventory
   inventory: '1400',
@@ -140,14 +140,14 @@ const DEFAULT_ACCOUNTS = {
   taxPayable: '2100',
   
   // Expenses
-  salaries: '5400',
-  salariesWages: '5400',
+  salaries: '5300',
+  salariesWages: '5300',
   payrollExpenses: '5410',
   rent: '5500',
   utilities: '5600',
   transport: '5700',
-  marketing: '5800',
-  depreciation: '5900',
+  marketing: '5850',
+  depreciation: '5800',
   interestExpense: '6000',
   otherExpenses: '6100',
   bankCharges: '6200',

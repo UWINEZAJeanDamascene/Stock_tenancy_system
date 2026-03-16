@@ -38,7 +38,7 @@ exports.getPayrollRecords = async (req, res, next) => {
     const totalGross = payrollRecords.reduce((sum, p) => sum + (p.salary.grossSalary || 0), 0);
     const totalNet = payrollRecords.reduce((sum, p) => sum + (p.netPay || 0), 0);
     const totalPAYE = payrollRecords.reduce((sum, p) => sum + (p.deductions.paye || 0), 0);
-    const totalRSSB = payrollRecords.reduce((sum, p) => sum + (p.deductions.rssbEmployee || 0), 0);
+    const totalRSSBEmployee = payrollRecords.reduce((sum, p) => sum + ((p.deductions.rssbEmployeePension || 0) + (p.deductions.rssbEmployeeMaternity || 0)), 0);
     
     res.json({
       success: true,
@@ -48,7 +48,7 @@ exports.getPayrollRecords = async (req, res, next) => {
         totalGrossSalary: Math.round(totalGross * 100) / 100,
         totalNetPay: Math.round(totalNet * 100) / 100,
         totalPAYE: Math.round(totalPAYE * 100) / 100,
-        totalRSSB: Math.round(totalRSSB * 100) / 100,
+        totalRSSB: Math.round(totalRSSBEmployee * 100) / 100,
         employeeCount: payrollRecords.length
       }
     });
@@ -111,13 +111,15 @@ exports.createPayroll = async (req, res, next) => {
       },
       deductions: {
         paye: calculated.deductions.paye,
-        rssbEmployee: calculated.deductions.rssbEmployee,
+        rssbEmployeePension: calculated.deductions.rssbEmployeePension,
+        rssbEmployeeMaternity: calculated.deductions.rssbEmployeeMaternity,
         totalDeductions: calculated.deductions.totalDeductions
       },
       netPay: calculated.netPay,
       contributions: {
-        rssbEmployer: calculated.contributions.rssbEmployer,
-        maternity: calculated.contributions.maternity
+        rssbEmployerPension: calculated.contributions.rssbEmployerPension,
+        rssbEmployerMaternity: calculated.contributions.rssbEmployerMaternity,
+        occupationalHazard: calculated.contributions.occupationalHazard
       },
       period: {
         month: period.month,
@@ -182,13 +184,15 @@ exports.updatePayroll = async (req, res, next) => {
       };
       payroll.deductions = {
         paye: calculated.deductions.paye,
-        rssbEmployee: calculated.deductions.rssbEmployee,
+        rssbEmployeePension: calculated.deductions.rssbEmployeePension,
+        rssbEmployeeMaternity: calculated.deductions.rssbEmployeeMaternity,
         totalDeductions: calculated.deductions.totalDeductions
       };
       payroll.netPay = calculated.netPay;
       payroll.contributions = {
-        rssbEmployer: calculated.contributions.rssbEmployer,
-        maternity: calculated.contributions.maternity
+        rssbEmployerPension: calculated.contributions.rssbEmployerPension,
+        rssbEmployerMaternity: calculated.contributions.rssbEmployerMaternity,
+        occupationalHazard: calculated.contributions.occupationalHazard
       };
     }
     
@@ -281,85 +285,142 @@ exports.processPayment = async (req, res, next) => {
     payroll.approvedBy = userId;
     await payroll.save();
 
-    // Create journal entry for payroll payment
+    // Create journal entries for payroll payment - TWO separate entries
     try {
       const { DEFAULT_ACCOUNTS } = require('../constants/chartOfAccounts');
       const cashAccount = paymentMethod === 'bank' 
         ? DEFAULT_ACCOUNTS.cashAtBank 
         : DEFAULT_ACCOUNTS.cashInHand;
       
-      const lines = [];
-      
-      // Debit: Salaries Expense (gross salary)
+      // Get values
       const grossSalary = payroll.salary.grossSalary || 0;
+      const netPay = payroll.netPay || 0;
+      const paye = payroll.deductions.paye || 0;
+      const rssbEmployeePension = payroll.deductions.rssbEmployeePension || 0;
+      const rssbEmployeeMaternity = payroll.deductions.rssbEmployeeMaternity || 0;
+      const rssbEmployeeTotal = rssbEmployeePension + rssbEmployeeMaternity;
+      const rssbEmployerPension = payroll.contributions.rssbEmployerPension || 0;
+      const rssbEmployerMaternity = payroll.contributions.rssbEmployerMaternity || 0;
+      const occupationalHazard = payroll.contributions.occupationalHazard || 0;
+      const employerContribTotal = rssbEmployerPension + rssbEmployerMaternity + occupationalHazard;
+      
+      // Entry 1: Salary Payment (Pay employee)
+      // DR Salaries & Wages, CR PAYE, CR RSSB, CR Cash/Bank
+      const lines1 = [];
       if (grossSalary > 0) {
-        lines.push(JournalService.createDebitLine(
+        lines1.push(JournalService.createDebitLine(
           DEFAULT_ACCOUNTS.salariesWages,
           grossSalary,
           `Salary payment - ${payroll.employee.firstName} ${payroll.employee.lastName} - ${payroll.period.monthName} ${payroll.period.year}`
         ));
       }
       
-      // Debit: Employer Contributions Expense (RSSB Employer + Maternity)
-      const employerContrib = (payroll.contributions.rssbEmployer || 0) + (payroll.contributions.maternity || 0);
-      if (employerContrib > 0) {
-        lines.push(JournalService.createDebitLine(
-          DEFAULT_ACCOUNTS.payrollExpenses,
-          employerContrib,
-          `Employer contributions - ${payroll.period.monthName} ${payroll.period.year}`
-        ));
-      }
-      
-      // Credit: Cash/Bank (net pay to employee)
-      const netPay = payroll.netPay || 0;
-      if (netPay > 0) {
-        lines.push(JournalService.createCreditLine(
-          cashAccount,
-          netPay,
-          `Salary payment - ${payroll.employee.firstName} ${payroll.employee.lastName}`
-        ));
-      }
-      
-      // Credit: PAYE Payable (tax withheld)
-      const paye = payroll.deductions.paye || 0;
       if (paye > 0) {
-        lines.push(JournalService.createCreditLine(
+        lines1.push(JournalService.createCreditLine(
           DEFAULT_ACCOUNTS.payePayable,
           paye,
-          `PAYE - ${payroll.employee.firstName} ${payroll.employee.lastName} - ${payroll.period.monthName} ${payroll.period.year}`
+          `PAYE deduction - ${payroll.employee.firstName} ${payroll.employee.lastName}`
         ));
       }
       
-      // Credit: RSSB Payable (employee social security)
-      const rssb = payroll.deductions.rssbEmployee || 0;
-      if (rssb > 0) {
-        lines.push(JournalService.createCreditLine(
+      if (rssbEmployeeTotal > 0) {
+        lines1.push(JournalService.createCreditLine(
           DEFAULT_ACCOUNTS.rssbPayable,
-          rssb,
-          `RSSB - ${payroll.employee.firstName} ${payroll.employee.lastName} - ${payroll.period.monthName} ${payroll.period.year}`
+          rssbEmployeeTotal,
+          `RSSB deduction (Pension + Maternity) - ${payroll.employee.firstName} ${payroll.employee.lastName}`
         ));
       }
       
-      // Credit: Employer RSSB Payable
-      if (employerContrib > 0) {
-        lines.push(JournalService.createCreditLine(
+      if (netPay > 0) {
+        lines1.push(JournalService.createCreditLine(
+          cashAccount,
+          netPay,
+          `Net salary - ${payroll.employee.firstName} ${payroll.employee.lastName}`
+        ));
+      }
+      
+      // Create Entry 1
+      if (lines1.length >= 2) {
+        await JournalService.createEntry(companyId, userId, {
+          date: new Date(),
+          description: `Salary Payment - ${payroll.employee.firstName} ${payroll.employee.lastName} - ${payroll.period.monthName} ${payroll.period.year}`,
+          sourceType: 'payroll_salary',
+          sourceId: payroll._id,
+          lines: lines1,
+          isAutoGenerated: true
+        });
+      }
+      
+      // Entry 2: Tax Payment to RRA (Pay PAYE + RSSB to tax authority)
+      // DR PAYE, DR RSSB, CR Cash/Bank
+      const lines2 = [];
+      
+      if (paye > 0) {
+        lines2.push(JournalService.createDebitLine(
+          DEFAULT_ACCOUNTS.payePayable,
+          paye,
+          `PAYE payment - ${payroll.period.monthName} ${payroll.period.year}`
+        ));
+      }
+      
+      if (rssbEmployeeTotal > 0) {
+        lines2.push(JournalService.createDebitLine(
+          DEFAULT_ACCOUNTS.rssbPayable,
+          rssbEmployeeTotal,
+          `RSSB payment (Pension + Maternity) - ${payroll.period.monthName} ${payroll.period.year}`
+        ));
+      }
+      
+      const totalTax = paye + rssbEmployeeTotal;
+      if (totalTax > 0) {
+        lines2.push(JournalService.createCreditLine(
+          cashAccount,
+          totalTax,
+          `Tax payment to RRA - ${payroll.period.monthName} ${payroll.period.year}`
+        ));
+      }
+      
+      // Create Entry 2
+      if (lines2.length >= 2) {
+        await JournalService.createEntry(companyId, userId, {
+          date: new Date(),
+          description: `Tax Payment to RRA - ${payroll.period.monthName} ${payroll.period.year}`,
+          sourceType: 'payroll_tax',
+          sourceId: payroll._id,
+          lines: lines2,
+          isAutoGenerated: true
+        });
+      }
+      
+      // Entry 3: Employer Contributions (when employer pays their portion)
+      if (employerContribTotal > 0) {
+        const lines3 = [];
+        
+        // DR Employer Contributions Expense
+        lines3.push(JournalService.createDebitLine(
+          DEFAULT_ACCOUNTS.payrollExpenses,
+          employerContribTotal,
+          `Employer contributions - ${payroll.period.monthName} ${payroll.period.year}`
+        ));
+        
+        // CR Employer Contributions Payable (Pension + Maternity + Occupational Hazard)
+        lines3.push(JournalService.createCreditLine(
           DEFAULT_ACCOUNTS.employerContributionPayable,
-          employerContrib,
-          `Employer contributions payable - ${payroll.period.monthName} ${payroll.period.year}`
+          employerContribTotal,
+          `Employer contributions payable (Pension + Maternity + Occ. Hazard) - ${payroll.period.monthName} ${payroll.period.year}`
         ));
+        
+        await JournalService.createEntry(companyId, userId, {
+          date: new Date(),
+          description: `Employer Contributions - ${payroll.period.monthName} ${payroll.period.year}`,
+          sourceType: 'payroll_employer',
+          sourceId: payroll._id,
+          lines: lines3,
+          isAutoGenerated: true
+        });
       }
-      
-      await JournalService.createEntry(companyId, userId, {
-        date: new Date(),
-        description: `Salary payment - ${payroll.employee.firstName} ${payroll.employee.lastName} - ${payroll.period.monthName} ${payroll.period.year}`,
-        sourceType: 'payroll',
-        sourceId: payroll._id,
-        lines,
-        isAutoGenerated: true
-      });
     } catch (journalError) {
-      console.error('Error creating journal entry for payroll:', journalError);
-      // Don't fail the payment if journal entry fails
+      console.error('Error creating journal entries for payroll:', journalError);
     }
 
     res.json({
@@ -414,15 +475,15 @@ exports.getPayrollSummary = async (req, res, next) => {
       monthlyData[key].grossSalary += record.salary.grossSalary || 0;
       monthlyData[key].netPay += record.netPay || 0;
       monthlyData[key].paye += record.deductions.paye || 0;
-      monthlyData[key].rssb += record.deductions.rssbEmployee || 0;
-      monthlyData[key].employerContrib += (record.contributions.rssbEmployer || 0) + (record.contributions.maternity || 0);
+      monthlyData[key].rssb += (record.deductions.rssbEmployeePension || 0) + (record.deductions.rssbEmployeeMaternity || 0);
+      monthlyData[key].employerContrib += (record.contributions.rssbEmployerPension || 0) + (record.contributions.rssbEmployerMaternity || 0) + (record.contributions.occupationalHazard || 0);
       monthlyData[key].employeeCount += 1;
       
       totalGross += record.salary.grossSalary || 0;
       totalNet += record.netPay || 0;
       totalPAYE += record.deductions.paye || 0;
-      totalRSSB += record.deductions.rssbEmployee || 0;
-      totalEmployerContrib += (record.contributions.rssbEmployer || 0) + (record.contributions.maternity || 0);
+      totalRSSB += (record.deductions.rssbEmployeePension || 0) + (record.deductions.rssbEmployeeMaternity || 0);
+      totalEmployerContrib += (record.contributions.rssbEmployerPension || 0) + (record.contributions.rssbEmployerMaternity || 0) + (record.contributions.occupationalHazard || 0);
     });
     
     // Get current month stats
@@ -473,11 +534,13 @@ exports.calculatePayroll = async (req, res, next) => {
     
     const calculated = Payroll.calculatePayroll(salary);
     
-    // Get tax brackets for display
+    // Get tax brackets for display - Updated 2025
+    const grossSalary = salary.basicSalary + (salary.transportAllowance || 0) + (salary.housingAllowance || 0) + (salary.otherAllowances || 0);
     const taxBrackets = [
-      { range: '0 - 30,000', rate: '0%', tax: 0 },
-      { range: '30,001 - 100,000', rate: '20%', tax: Math.max(0, (Math.min(salary.basicSalary, 100000) - 30000) * 0.20) },
-      { range: 'Above 100,000', rate: '30%', tax: salary.basicSalary > 100000 ? (salary.basicSalary - 100000) * 0.30 + 14000 : 0 }
+      { range: '0 - 60,000', rate: '0%', tax: 0 },
+      { range: '60,001 - 100,000', rate: '10%', tax: Math.max(0, (Math.min(grossSalary, 100000) - 60000) * 0.10) },
+      { range: '100,001 - 200,000', rate: '20%', tax: grossSalary > 100000 ? 4000 + Math.max(0, (Math.min(grossSalary, 200000) - 100000) * 0.20) : 0 },
+      { range: 'Above 200,000', rate: '30%', tax: grossSalary > 200000 ? 24000 + (grossSalary - 200000) * 0.30 : 0 }
     ];
     
     res.json({
@@ -529,13 +592,15 @@ exports.bulkCreatePayroll = async (req, res, next) => {
         },
         deductions: {
           paye: calculated.deductions.paye,
-          rssbEmployee: calculated.deductions.rssbEmployee,
+          rssbEmployeePension: calculated.deductions.rssbEmployeePension,
+          rssbEmployeeMaternity: calculated.deductions.rssbEmployeeMaternity,
           totalDeductions: calculated.deductions.totalDeductions
         },
         netPay: calculated.netPay,
         contributions: {
-          rssbEmployer: calculated.contributions.rssbEmployer,
-          maternity: calculated.contributions.maternity
+          rssbEmployerPension: calculated.contributions.rssbEmployerPension,
+          rssbEmployerMaternity: calculated.contributions.rssbEmployerMaternity,
+          occupationalHazard: calculated.contributions.occupationalHazard
         },
         period: {
           month: period.month,

@@ -166,14 +166,58 @@ exports.approveCreditNote = async (req, res, next) => {
     note.status = 'issued';
     await note.save();
 
-    // Create journal entry for credit note (Sales Returns + VAT Debit, Accounts Receivable Credit)
+    // Calculate inventory cost for stock reversal (cost of goods sold)
+    let inventoryCost = 0;
+    if (reverseStock && note.items && note.items.length > 0) {
+      for (const item of note.items) {
+        const product = await Product.findOne({ _id: item.product, company: companyId });
+        if (product && product.averageCost) {
+          const qty = item.quantity || 0;
+          inventoryCost += (product.averageCost * qty);
+        }
+      }
+    }
+
+    // Get refund method from request (bank_transfer, cash, mobile_money, or ar)
+    const refundMethod = req.body.refundMethod || 'ar';
+    let bankAccountCode = null;
+    if ((refundMethod === 'bank_transfer' || refundMethod === 'cheque' || refundMethod === 'mobile_money') && req.body.bankAccountId) {
+      const { BankAccount } = require('../models/BankAccount');
+      
+      // Try to find by _id first (MongoDB ObjectId), then by accountCode
+      let bankAccount = await BankAccount.findOne({
+        _id: req.body.bankAccountId,
+        company: companyId,
+        isActive: true
+      });
+      
+      // If not found by _id, try finding by accountCode (in case user passed account code like "1100")
+      if (!bankAccount) {
+        bankAccount = await BankAccount.findOne({
+          accountCode: req.body.bankAccountId,
+          company: companyId,
+          isActive: true
+        });
+      }
+      
+      if (bankAccount && bankAccount.accountCode) {
+        bankAccountCode = bankAccount.accountCode;
+      }
+    }
+
+    // Create journal entry for credit note
+    // If refundMethod is not 'ar', it will credit Cash/Bank instead of Accounts Receivable
+    // If reverseStock is true, it will also add Inventory/COGS entries
     try {
       await JournalService.createCreditNoteEntry(companyId, req.user.id, {
         _id: note._id,
         creditNoteNumber: note.creditNoteNumber,
         date: note.date,
         total: note.grandTotal,
-        vatAmount: note.totalTax
+        vatAmount: note.totalTax,
+        refundMethod: refundMethod,
+        bankAccountCode: bankAccountCode,
+        inventoryCost: inventoryCost
       });
     } catch (journalError) {
       console.error('Error creating journal entry for credit note:', journalError);

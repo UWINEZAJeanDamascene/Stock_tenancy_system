@@ -163,10 +163,22 @@ class JournalService {
   static async createInvoicePaymentEntry(companyId, userId, payment) {
     const lines = [];
 
-    // Determine cash account
-    const cashAccount = payment.paymentMethod === 'bank' 
-      ? DEFAULT_ACCOUNTS.cashAtBank 
-      : DEFAULT_ACCOUNTS.cashInHand;
+    // Determine cash account based on payment method
+    let cashAccount;
+    const paymentMethod = payment.paymentMethod;
+    
+    if (paymentMethod === 'bank_transfer' || paymentMethod === 'cheque') {
+      // Use the bank account code if provided, otherwise default to cash at bank
+      cashAccount = payment.bankAccountCode || DEFAULT_ACCOUNTS.cashAtBank;
+    } else if (paymentMethod === 'mobile_money') {
+      // Use the momo account code if provided, otherwise default to mtn momo
+      cashAccount = payment.bankAccountCode || DEFAULT_ACCOUNTS.mtnMoMo;
+    } else if (paymentMethod === 'bank') {
+      cashAccount = DEFAULT_ACCOUNTS.cashAtBank;
+    } else {
+      // cash, credit, or any other method
+      cashAccount = DEFAULT_ACCOUNTS.cashInHand;
+    }
 
     // Debit: Cash/Bank
     lines.push(this.createDebitLine(
@@ -193,15 +205,46 @@ class JournalService {
   }
 
   /**
-   * Credit Note issued
-   * Debit: Sales Returns + VAT
-   * Credit: Accounts Receivable
+   * Credit Note issued (customer returns goods)
+   * 
+   * For sales return with refund (money returned to customer):
+   *   Debit: Sales Returns (4100)
+   *   Debit: VAT Payable (2100)
+   *   Credit: Cash/Bank (based on refund method)
+   *   
+   * For inventory return:
+   *   Debit: Inventory (1400)
+   *   Credit: Cost of Goods Sold (5000)
+   * 
+   * For sales return without immediate refund (reduce AR):
+   *   Debit: Sales Returns (4100)
+   *   Debit: VAT Payable (2100)
+   *   Credit: Accounts Receivable (1300)
    */
   static async createCreditNoteEntry(companyId, userId, creditNote) {
     const lines = [];
     const total = creditNote.total || 0;
     const vatAmount = creditNote.vatAmount || 0;
     const subtotal = total - vatAmount;
+    
+    // Determine refund method: 'bank', 'cash', or 'ar' (default to AR for credit)
+    const refundMethod = creditNote.refundMethod || 'ar';
+    const inventoryCost = creditNote.inventoryCost || 0;
+    
+    // Determine cash account based on refund method
+    let cashAccount;
+    if (refundMethod === 'bank_transfer' || refundMethod === 'cheque') {
+      cashAccount = creditNote.bankAccountCode || DEFAULT_ACCOUNTS.cashAtBank;
+    } else if (refundMethod === 'mobile_money') {
+      cashAccount = creditNote.bankAccountCode || DEFAULT_ACCOUNTS.mtnMoMo;
+    } else if (refundMethod === 'bank') {
+      cashAccount = DEFAULT_ACCOUNTS.cashAtBank;
+    } else if (refundMethod === 'cash') {
+      cashAccount = DEFAULT_ACCOUNTS.cashInHand;
+    } else {
+      // Default to AR (no immediate refund)
+      cashAccount = null;
+    }
 
     // Debit: Sales Returns
     if (subtotal > 0) {
@@ -212,21 +255,48 @@ class JournalService {
       ));
     }
 
-    // Debit: VAT Receivable
+    // Debit: VAT Payable (not VAT Receivable - this is a reduction of output VAT)
     if (vatAmount > 0) {
       lines.push(this.createDebitLine(
-        DEFAULT_ACCOUNTS.vatReceivable,
+        DEFAULT_ACCOUNTS.vatPayable,
         vatAmount,
         `Credit Note ${creditNote.creditNoteNumber} - VAT`
       ));
     }
 
-    // Credit: Accounts Receivable
-    lines.push(this.createCreditLine(
-      DEFAULT_ACCOUNTS.accountsReceivable,
-      total,
-      `Credit Note ${creditNote.creditNoteNumber}`
-    ));
+    // Credit: Either Cash/Bank (refund) or Accounts Receivable (credit)
+    if (cashAccount) {
+      // Refund via cash/bank
+      lines.push(this.createCreditLine(
+        cashAccount,
+        total,
+        `Credit Note ${creditNote.creditNoteNumber} - Refund`
+      ));
+    } else {
+      // No immediate refund - reduce AR instead
+      lines.push(this.createCreditLine(
+        DEFAULT_ACCOUNTS.accountsReceivable,
+        total,
+        `Credit Note ${creditNote.creditNoteNumber}`
+      ));
+    }
+
+    // Add inventory/COGS entries if there's inventory cost (stock returned)
+    if (inventoryCost > 0) {
+      // Debit: Inventory (stock returning to warehouse)
+      lines.push(this.createDebitLine(
+        DEFAULT_ACCOUNTS.inventory,
+        inventoryCost,
+        `Credit Note ${creditNote.creditNoteNumber} - Inventory Return`
+      ));
+
+      // Credit: Cost of Goods Sold (reverse the COGS)
+      lines.push(this.createCreditLine(
+        DEFAULT_ACCOUNTS.costOfGoodsSold,
+        inventoryCost,
+        `Credit Note ${creditNote.creditNoteNumber} - COGS Reversal`
+      ));
+    }
 
     return this.createEntry(companyId, userId, {
       date: creditNote.date || new Date(),
@@ -298,10 +368,22 @@ class JournalService {
   static async createPurchasePaymentEntry(companyId, userId, payment) {
     const lines = [];
 
-    // Determine cash account
-    const cashAccount = payment.paymentMethod === 'bank' 
-      ? DEFAULT_ACCOUNTS.cashAtBank 
-      : DEFAULT_ACCOUNTS.cashInHand;
+    // Determine cash account based on payment method
+    let cashAccount;
+    const paymentMethod = payment.paymentMethod;
+    
+    if (paymentMethod === 'bank_transfer' || paymentMethod === 'cheque') {
+      // Use the bank account code if provided, otherwise default to cash at bank
+      cashAccount = payment.bankAccountCode || DEFAULT_ACCOUNTS.cashAtBank;
+    } else if (paymentMethod === 'mobile_money') {
+      // Use the momo account code if provided, otherwise default to mtn momo
+      cashAccount = payment.bankAccountCode || DEFAULT_ACCOUNTS.mtnMoMo;
+    } else if (paymentMethod === 'bank') {
+      cashAccount = DEFAULT_ACCOUNTS.cashAtBank;
+    } else {
+      // cash, credit, or any other method
+      cashAccount = DEFAULT_ACCOUNTS.cashInHand;
+    }
 
     // Debit: Accounts Payable
     lines.push(this.createDebitLine(
@@ -346,10 +428,22 @@ class JournalService {
       ? DEFAULT_ACCOUNTS[expense.category] || DEFAULT_ACCOUNTS.otherExpenses
       : DEFAULT_ACCOUNTS.otherExpenses;
 
-    // Determine cash account
-    const cashAccount = expense.paymentMethod === 'bank' 
-      ? DEFAULT_ACCOUNTS.cashAtBank 
-      : DEFAULT_ACCOUNTS.cashInHand;
+    // Determine cash account based on payment method
+    let cashAccount;
+    const paymentMethod = expense.paymentMethod;
+    
+    if (paymentMethod === 'bank_transfer' || paymentMethod === 'cheque') {
+      // Use the bank account code if provided, otherwise default to cash at bank
+      cashAccount = expense.bankAccountCode || DEFAULT_ACCOUNTS.cashAtBank;
+    } else if (paymentMethod === 'mobile_money') {
+      // Use the momo account code if provided, otherwise default to cash in hand
+      cashAccount = expense.bankAccountCode || DEFAULT_ACCOUNTS.cashInHand;
+    } else if (paymentMethod === 'bank') {
+      cashAccount = DEFAULT_ACCOUNTS.cashAtBank;
+    } else {
+      // cash, credit, or any other method
+      cashAccount = DEFAULT_ACCOUNTS.cashInHand;
+    }
 
     // Debit: Expense
     lines.push(this.createDebitLine(
@@ -382,16 +476,30 @@ class JournalService {
   /**
    * Asset purchased (cash)
    * Debit: Fixed Asset
-   * Credit: Cash/Bank
+   * Credit: Cash/Bank (based on payment method)
    */
   static async createAssetPurchaseEntry(companyId, userId, asset) {
     const lines = [];
 
     // Determine asset account based on category
     const assetAccountCode = this.getAssetAccountCode(asset.category);
-    const cashAccount = asset.paymentMethod === 'bank' 
-      ? DEFAULT_ACCOUNTS.cashAtBank 
-      : DEFAULT_ACCOUNTS.cashInHand;
+
+    // Determine cash account based on payment method
+    let cashAccount;
+    const paymentMethod = asset.paymentMethod;
+    
+    if (paymentMethod === 'bank_transfer' || paymentMethod === 'cheque') {
+      // Use the bank account code if provided, otherwise default to cash at bank
+      cashAccount = asset.bankAccountCode || DEFAULT_ACCOUNTS.cashAtBank;
+    } else if (paymentMethod === 'mobile_money') {
+      // Use the momo account code if provided, otherwise default to mtn momo
+      cashAccount = asset.bankAccountCode || DEFAULT_ACCOUNTS.mtnMoMo;
+    } else if (paymentMethod === 'bank') {
+      cashAccount = DEFAULT_ACCOUNTS.cashAtBank;
+    } else {
+      // cash or any other method - default to cash in hand
+      cashAccount = DEFAULT_ACCOUNTS.cashInHand;
+    }
 
     // Debit: Fixed Asset
     lines.push(this.createDebitLine(
@@ -475,9 +583,18 @@ class JournalService {
     const gainLoss = proceeds - netBookValue;
 
     // Determine cash account
-    const cashAccount = asset.paymentMethod === 'bank' 
-      ? DEFAULT_ACCOUNTS.cashAtBank 
-      : DEFAULT_ACCOUNTS.cashInHand;
+    let cashAccount;
+    const paymentMethod = asset.paymentMethod;
+    
+    if (paymentMethod === 'bank_transfer' || paymentMethod === 'cheque') {
+      cashAccount = asset.bankAccountCode || DEFAULT_ACCOUNTS.cashAtBank;
+    } else if (paymentMethod === 'mobile_money') {
+      cashAccount = asset.bankAccountCode || DEFAULT_ACCOUNTS.mtnMoMo;
+    } else if (paymentMethod === 'bank') {
+      cashAccount = DEFAULT_ACCOUNTS.cashAtBank;
+    } else {
+      cashAccount = DEFAULT_ACCOUNTS.cashInHand;
+    }
 
     // Determine asset account
     const assetAccountCode = this.getAssetAccountCode(asset.category);

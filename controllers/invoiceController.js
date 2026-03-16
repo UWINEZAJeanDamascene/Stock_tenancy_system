@@ -163,6 +163,65 @@ exports.createInvoice = async (req, res, next) => {
 
     await invoice.populate('client items.product createdBy');
 
+    // Auto-deduct stock immediately when invoice is created (sale happens)
+    for (const item of invoice.items) {
+      const product = await Product.findOne({ _id: item.product._id, company: companyId });
+      
+      if (product) {
+        const previousStock = product.currentStock;
+        const newStock = previousStock - item.quantity;
+
+        // Create stock movement (ledger entry)
+        await StockMovement.create({
+          company: companyId,
+          product: product._id,
+          type: 'out',
+          reason: 'sale',
+          quantity: item.quantity,
+          previousStock,
+          newStock,
+          unitCost: item.unitPrice,
+          totalCost: item.totalWithTax,
+          referenceType: 'invoice',
+          referenceNumber: invoice.invoiceNumber,
+          referenceDocument: invoice._id,
+          referenceModel: 'Invoice',
+          notes: `Invoice ${invoice.invoiceNumber} - Sale`,
+          performedBy: req.user.id
+        });
+
+        // Update product stock
+        product.currentStock = newStock;
+        product.lastSaleDate = new Date();
+        await product.save();
+      }
+    }
+
+    // Mark invoice as stock deducted
+    invoice.stockDeducted = true;
+    invoice.status = 'confirmed';
+    invoice.confirmedDate = new Date();
+    invoice.confirmedBy = req.user.id;
+    await invoice.save();
+
+    // Update client outstanding balance
+    client.outstandingBalance += invoice.roundedAmount;
+    await client.save();
+
+    // Create journal entry for the sale (Accounts Receivable Debit, Sales Revenue + VAT Credit)
+    try {
+      await JournalService.createInvoiceEntry(companyId, req.user.id, {
+        _id: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        date: invoice.invoiceDate,
+        total: invoice.roundedAmount,
+        vatAmount: invoice.totalTax
+      });
+    } catch (journalError) {
+      console.error('Error creating journal entry for invoice:', journalError);
+      // Don't fail the invoice creation if journal entry fails
+    }
+
     // Attempt to send invoice email to client if email exists
     const sendEmailOnCreate = req.body.sendEmail || false;
     if (sendEmailOnCreate) {
@@ -175,6 +234,10 @@ exports.createInvoice = async (req, res, next) => {
         console.error('Invoice email error:', emailErr);
       }
     }
+
+    // Update client outstanding balance
+    client.outstandingBalance += invoice.roundedAmount;
+    await client.save();
 
     // Notify invoice created
     try {
@@ -538,11 +601,25 @@ exports.recordPayment = async (req, res, next) => {
 
     // Create journal entry for payment (Cash/Bank Debit, Accounts Receivable Credit)
     try {
+      // Get bank account code if bank payment
+      let bankAccountCode = null;
+      if ((paymentMethod === 'bank_transfer' || paymentMethod === 'cheque' || paymentMethod === 'mobile_money') && req.body.bankAccountId) {
+        const bankAccount = await BankAccount.findOne({
+          _id: req.body.bankAccountId,
+          company: companyId,
+          isActive: true
+        });
+        if (bankAccount && bankAccount.accountCode) {
+          bankAccountCode = bankAccount.accountCode;
+        }
+      }
+      
       await JournalService.createInvoicePaymentEntry(companyId, req.user.id, {
         invoiceNumber: invoice.invoiceNumber,
         date: new Date(),
         amount: amount,
-        paymentMethod: paymentMethod
+        paymentMethod: paymentMethod,
+        bankAccountCode: bankAccountCode
       });
     } catch (journalError) {
       console.error('Error creating journal entry for payment:', journalError);

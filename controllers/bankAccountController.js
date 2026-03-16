@@ -501,7 +501,7 @@ exports.getAllTransactions = async (req, res, next) => {
     query.account = { $in: activeAccountIds };
     
     const transactions = await BankTransaction.find(query)
-      .populate('account', 'name accountType')
+      .populate('account', 'name accountType _id')
       .populate('createdBy', 'name email')
       .sort({ date: -1 })
       .skip((page - 1) * limit)

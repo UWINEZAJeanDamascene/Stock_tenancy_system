@@ -2,6 +2,12 @@ const mongoose = require('mongoose');
 
 // Bank Account Transaction Schema (for tracking all movements)
 const bankTransactionSchema = new mongoose.Schema({
+  // Bank account reference (required to link transaction to specific account)
+  account: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'BankAccount',
+    required: [true, 'Transaction must be linked to a bank account']
+  },
   // Transaction type
   type: {
     type: String,
@@ -88,6 +94,11 @@ const bankAccountSchema = new mongoose.Schema({
     type: String,
     enum: ['bk_bank', 'equity_bank', 'im_bank', 'cogebanque', 'ecobank', 'mtn_momo', 'airtel_money', 'cash_in_hand'],
     required: [true, 'Please specify account type']
+  },
+  // Account code from chart of accounts (for journal entries)
+  accountCode: {
+    type: String,
+    default: '1100'
   },
   // Account number / Phone number
   accountNumber: {
@@ -176,6 +187,21 @@ bankTransactionSchema.index({ company: 1, reference: 1 });
 bankAccountSchema.pre('save', async function(next) {
   if (this.isNew) {
     this.currentBalance = this.openingBalance;
+    
+    // Auto-set account code based on account type if not provided
+    if (!this.accountCode) {
+      const typeToCode = {
+        'bk_bank': '1100',
+        'equity_bank': '1100',
+        'im_bank': '1100',
+        'cogebanque': '1100',
+        'ecobank': '1100',
+        'mtn_momo': '1200',
+        'airtel_money': '1200',
+        'cash_in_hand': '1000'
+      };
+      this.accountCode = typeToCode[this.accountType] || '1100';
+    }
   }
   
   // Ensure only one primary account per company

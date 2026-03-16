@@ -134,6 +134,21 @@ exports.createPurchase = async (req, res, next) => {
 
     await purchase.populate('supplier items.product createdBy');
 
+    // Create journal entry for the purchase (Inventory + VAT Debit, Accounts Payable Credit)
+    // This happens immediately when purchase is created (on credit/unpaid)
+    try {
+      await JournalService.createPurchaseEntry(companyId, req.user.id, {
+        _id: purchase._id,
+        purchaseNumber: purchase.purchaseNumber,
+        date: purchase.purchaseDate,
+        total: purchase.roundedAmount,
+        vatAmount: purchase.totalTax
+      });
+    } catch (journalError) {
+      console.error('Error creating journal entry for purchase:', journalError);
+      // Don't fail the purchase creation if journal entry fails
+    }
+
     res.status(201).json({
       success: true,
       data: purchase
@@ -332,19 +347,8 @@ exports.receivePurchase = async (req, res, next) => {
     purchase.confirmedBy = req.user.id;
     await purchase.save();
 
-    // Create journal entry for the purchase (Inventory + VAT Debit, Accounts Payable Credit)
-    try {
-      await JournalService.createPurchaseEntry(companyId, req.user.id, {
-        _id: purchase._id,
-        purchaseNumber: purchase.purchaseNumber,
-        date: purchase.purchaseDate,
-        total: purchase.roundedAmount,
-        vatAmount: purchase.totalTax
-      });
-    } catch (journalError) {
-      console.error('Error creating journal entry for purchase:', journalError);
-      // Don't fail the purchase receipt if journal entry fails
-    }
+    // Note: Journal entry is created in createPurchase when purchase is created on credit
+    // We don't create another one here to avoid duplication
 
     // Update supplier stats (supplier was fetched above)
     if (supplier) {
@@ -377,7 +381,7 @@ exports.receivePurchase = async (req, res, next) => {
 exports.recordPayment = async (req, res, next) => {
   try {
     const companyId = req.user.company._id;
-    const { amount, paymentMethod, reference, notes } = req.body;
+    const { amount, paymentMethod, reference, notes, bankAccountId } = req.body;
 
     const purchase = await Purchase.findOne({ _id: req.params.id, company: companyId })
       .populate('items.product');
@@ -401,6 +405,22 @@ exports.recordPayment = async (req, res, next) => {
         success: false,
         message: 'Payment amount exceeds purchase balance'
       });
+    }
+
+    // Check if bank account has sufficient balance for bank-based payments
+    if ((paymentMethod === 'bank_transfer' || paymentMethod === 'cheque' || paymentMethod === 'mobile_money') && bankAccountId) {
+      const bankAccount = await BankAccount.findOne({
+        _id: bankAccountId,
+        company: companyId,
+        isActive: true
+      });
+
+      if (bankAccount && bankAccount.currentBalance < amount) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient funds in ${bankAccount.name}. Current balance: ${bankAccount.currentBalance}, Required: ${amount}`
+        });
+      }
     }
 
     // Add payment
@@ -498,23 +518,39 @@ exports.recordPayment = async (req, res, next) => {
 
     // Create journal entry for payment (Accounts Payable Debit, Cash/Bank Credit)
     try {
+      // Get bank account code if bank payment
+      let bankAccountCode = null;
+      if ((paymentMethod === 'bank_transfer' || paymentMethod === 'cheque' || paymentMethod === 'mobile_money') && bankAccountId) {
+        const bankAccount = await BankAccount.findOne({
+          _id: bankAccountId,
+          company: companyId,
+          isActive: true
+        });
+        if (bankAccount && bankAccount.accountCode) {
+          bankAccountCode = bankAccount.accountCode;
+        }
+      }
+      
       await JournalService.createPurchasePaymentEntry(companyId, req.user.id, {
         purchaseNumber: purchase.purchaseNumber,
         date: new Date(),
         amount: amount,
-        paymentMethod: paymentMethod
+        paymentMethod: paymentMethod,
+        bankAccountCode: bankAccountCode
       });
     } catch (journalError) {
       console.error('Error creating journal entry for purchase payment:', journalError);
       // Don't fail the payment if journal entry fails
     }
 
-    // Create bank transaction if payment method is bank transfer and bank account is specified
+    // Create bank/Momo transaction for applicable payment methods
     let bankTransaction = null;
-    if (paymentMethod === 'bank_transfer' && req.body.bankAccountId) {
+    const paymentMethodsWithBank = ['bank_transfer', 'cheque', 'mobile_money'];
+    
+    if (paymentMethodsWithBank.includes(paymentMethod) && bankAccountId) {
       try {
         const bankAccount = await BankAccount.findOne({
-          _id: req.body.bankAccountId,
+          _id: bankAccountId,
           company: companyId,
           isActive: true
         });
@@ -523,22 +559,43 @@ exports.recordPayment = async (req, res, next) => {
           // Get current balance
           const currentBalance = bankAccount.currentBalance;
           
+          // Determine transaction type and description based on payment method
+          let transactionType = 'withdrawal';
+          let description = '';
+          let paymentMethodLabel = '';
+          
+          switch (paymentMethod) {
+            case 'bank_transfer':
+              paymentMethodLabel = 'Bank Transfer';
+              break;
+            case 'cheque':
+              paymentMethodLabel = 'Cheque';
+              break;
+            case 'mobile_money':
+              paymentMethodLabel = 'MoMo';
+              break;
+            default:
+              paymentMethodLabel = 'Payment';
+          }
+          
+          description = `Payment made: Purchase #${purchase.purchaseNumber}`;
+          
           // Create withdrawal transaction (debit)
           const transaction = new BankTransaction({
             company: companyId,
             account: bankAccount._id,
-            type: 'withdrawal',
+            type: transactionType,
             amount: amount,
             balanceAfter: currentBalance - amount,
-            description: `Payment made: Purchase #${purchase.purchaseNumber}`,
+            description: description,
             date: new Date(),
             referenceNumber: reference || purchase.purchaseNumber,
-            paymentMethod: 'bank_transfer',
+            paymentMethod: paymentMethod,
             status: 'completed',
             reference: purchase._id,
             referenceType: 'Purchase',
             createdBy: req.user._id,
-            notes: notes || `Payment for purchase ${purchase.purchaseNumber} to ${supplier?.name || 'Supplier'}`
+            notes: notes || `Payment for purchase ${purchase.purchaseNumber} to ${supplier?.name || 'Supplier'} via ${paymentMethodLabel}`
           });
           
           await transaction.save();
