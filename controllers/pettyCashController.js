@@ -1,0 +1,989 @@
+const { PettyCashFloat, PettyCashExpense, PettyCashReplenishment, PettyCashTransaction } = require('../models/PettyCash');
+const JournalService = require('../services/journalService');
+const { DEFAULT_ACCOUNTS } = require('../constants/chartOfAccounts');
+const mongoose = require('mongoose');
+
+// @desc    Get all petty cash floats for a company
+// @route   GET /api/petty-cash/floats
+// @access  Private
+exports.getFloats = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { isActive } = req.query;
+    
+    const query = { company: companyId };
+    if (isActive !== undefined) {
+      query.isActive = isActive === 'true';
+    }
+    
+    const floats = await PettyCashFloat.find(query)
+      .populate('custodian', 'name email')
+      .sort({ createdAt: -1 });
+    
+    // Calculate current balance for each float
+    const floatsWithBalance = await Promise.all(
+      floats.map(async (float) => {
+        const expenses = await PettyCashExpense.find({ 
+          float: float._id, 
+          status: { $in: ['approved', 'reimbursed'] } 
+        });
+        const totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+        
+        const replenishments = await PettyCashReplenishment.find({ 
+          float: float._id, 
+          status: 'completed' 
+        });
+        const totalReplenishments = replenishments.reduce((sum, rep) => sum + (rep.actualAmount || rep.amount || 0), 0);
+        
+        const currentBalance = float.openingBalance - totalExpenses + totalReplenishments;
+        
+        return {
+          ...float.toObject(),
+          currentBalance,
+          totalExpenses,
+          totalReplenishments
+        };
+      })
+    );
+    
+    res.json({
+      success: true,
+      count: floatsWithBalance.length,
+      data: floatsWithBalance
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get single petty cash float
+// @route   GET /api/petty-cash/floats/:id
+// @access  Private
+exports.getFloat = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    const float = await PettyCashFloat.findOne({
+      _id: req.params.id,
+      company: companyId
+    }).populate('custodian', 'name email');
+    
+    if (!float) {
+      return res.status(404).json({ success: false, message: 'Petty cash float not found' });
+    }
+    
+    // Calculate current balance
+    const expenses = await PettyCashExpense.find({ 
+      float: float._id, 
+      status: { $in: ['approved', 'reimbursed'] } 
+    });
+    const totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+    
+    const replenishments = await PettyCashReplenishment.find({ 
+      float: float._id, 
+      status: 'completed' 
+    });
+    const totalReplenishments = replenishments.reduce((sum, rep) => sum + (rep.actualAmount || rep.amount || 0), 0);
+    
+    const currentBalance = float.openingBalance - totalExpenses + totalReplenishments;
+    
+    res.json({
+      success: true,
+      data: {
+        ...float.toObject(),
+        currentBalance,
+        totalExpenses,
+        totalReplenishments
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Create new petty cash float
+// @route   POST /api/petty-cash/floats
+// @access  Private
+exports.createFloat = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    const pettyCashFloat = new PettyCashFloat({
+      ...req.body,
+      company: companyId,
+      custodian: req.user._id, // Use current user as custodian
+      currentBalance: req.body.openingBalance || 0
+    });
+    
+    await pettyCashFloat.save();
+    
+    // Create opening transaction
+    await PettyCashTransaction.create({
+      company: companyId,
+      float: pettyCashFloat._id,
+      type: 'opening',
+      amount: req.body.openingBalance || 0,
+      balanceAfter: req.body.openingBalance || 0,
+      description: 'Opening balance set',
+      createdBy: req.user._id
+    });
+    
+    // Create journal entry for opening float
+    // Debit: Petty Cash (1050), Credit: Cash in Hand (1000)
+    if (req.body.openingBalance > 0) {
+      try {
+        await JournalService.createEntry(companyId, req.user._id, {
+          date: new Date(),
+          description: `Petty Cash Float Opening: ${pettyCashFloat.name}`,
+          sourceType: 'petty_cash',
+          sourceId: pettyCashFloat._id,
+          sourceReference: 'Float Opening',
+          lines: [
+            JournalService.createDebitLine(
+              DEFAULT_ACCOUNTS.pettyCash,
+              req.body.openingBalance,
+              `Opening petty cash float: ${pettyCashFloat.name}`
+            ),
+            JournalService.createCreditLine(
+              DEFAULT_ACCOUNTS.cashInHand,
+              req.body.openingBalance,
+              `Opening petty cash float: ${pettyCashFloat.name}`
+            )
+          ],
+          isAutoGenerated: true
+        });
+      } catch (journalError) {
+        console.error('Failed to create journal entry for petty cash float:', journalError);
+        // Don't fail the request if journal entry fails
+      }
+    }
+    
+    res.status(201).json({
+      success: true,
+      data: pettyCashFloat
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Update petty cash float
+// @route   PUT /api/petty-cash/floats/:id
+// @access  Private
+exports.updateFloat = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    let pettyCashFloat = await PettyCashFloat.findOne({
+      _id: req.params.id,
+      company: companyId
+    });
+    
+    if (!pettyCashFloat) {
+      return res.status(404).json({ success: false, message: 'Petty cash float not found' });
+    }
+    
+    // Don't allow changing company
+    const { company, ...updateData } = req.body;
+    
+    Object.assign(pettyCashFloat, updateData);
+    await pettyCashFloat.save();
+    
+    res.json({
+      success: true,
+      data: pettyCashFloat
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Delete petty cash float (soft delete - deactivate)
+// @route   DELETE /api/petty-cash/floats/:id
+// @access  Private
+exports.deleteFloat = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    const pettyCashFloat = await PettyCashFloat.findOne({
+      _id: req.params.id,
+      company: companyId
+    });
+    
+    if (!pettyCashFloat) {
+      return res.status(404).json({ success: false, message: 'Petty cash float not found' });
+    }
+    
+    // Soft delete - just deactivate
+    pettyCashFloat.isActive = false;
+    await pettyCashFloat.save();
+    
+    res.json({
+      success: true,
+      message: 'Petty cash float deactivated'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get all expenses for a float
+// @route   GET /api/petty-cash/expenses
+// @access  Private
+exports.getExpenses = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { floatId, status, category, startDate, endDate, page = 1, limit = 50 } = req.query;
+    
+    const query = { company: companyId };
+    
+    if (floatId) query.float = floatId;
+    if (status) query.status = status;
+    if (category) query.category = category;
+    
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+    
+    const expenses = await PettyCashExpense.find(query)
+      .populate('float', 'name')
+      .populate('approvedBy', 'name email')
+      .sort({ date: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+    
+    const total = await PettyCashExpense.countDocuments(query);
+    
+    res.json({
+      success: true,
+      count: expenses.length,
+      total,
+      pages: Math.ceil(total / limit),
+      data: expenses
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get single expense
+// @route   GET /api/petty-cash/expenses/:id
+// @access  Private
+exports.getExpense = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    const expense = await PettyCashExpense.findOne({
+      _id: req.params.id,
+      company: companyId
+    })
+      .populate('float', 'name')
+      .populate('approvedBy', 'name email');
+    
+    if (!expense) {
+      return res.status(404).json({ success: false, message: 'Expense not found' });
+    }
+    
+    res.json({
+      success: true,
+      data: expense
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Create new expense
+// @route   POST /api/petty-cash/expenses
+// @access  Private
+exports.createExpense = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    const expense = new PettyCashExpense({
+      ...req.body,
+      company: companyId
+    });
+    
+    await expense.save();
+    
+    res.status(201).json({
+      success: true,
+      data: expense
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Update expense
+// @route   PUT /api/petty-cash/expenses/:id
+// @access  Private
+exports.updateExpense = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    let expense = await PettyCashExpense.findOne({
+      _id: req.params.id,
+      company: companyId
+    });
+    
+    if (!expense) {
+      return res.status(404).json({ success: false, message: 'Expense not found' });
+    }
+    
+    // Only allow updating pending expenses
+    if (expense.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Can only update pending expenses' });
+    }
+    
+    const { company, ...updateData } = req.body;
+    Object.assign(expense, updateData);
+    await expense.save();
+    
+    res.json({
+      success: true,
+      data: expense
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Approve/reject expense
+// @route   PUT /api/petty-cash/expenses/:id/approve
+// @access  Private
+exports.approveExpense = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { status, notes } = req.body;
+    
+    let expense = await PettyCashExpense.findOne({
+      _id: req.params.id,
+      company: companyId
+    });
+    
+    if (!expense) {
+      return res.status(404).json({ success: false, message: 'Expense not found' });
+    }
+    
+    if (!['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+    
+    expense.status = status;
+    expense.approvedBy = req.user._id;
+    expense.approvedAt = new Date();
+    if (notes) expense.notes = notes;
+    
+    await expense.save();
+    
+    // Create transaction record
+    const float = await PettyCashFloat.findById(expense.float);
+    const expenses = await PettyCashExpense.find({ 
+      float: expense.float, 
+      status: { $in: ['approved', 'reimbursed'] } 
+    });
+    const totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+    
+    const replenishments = await PettyCashReplenishment.find({ 
+      float: expense.float, 
+      status: 'completed' 
+    });
+    const totalReplenishments = replenishments.reduce((sum, rep) => sum + (rep.actualAmount || rep.amount || 0), 0);
+    
+    const balanceAfter = float.openingBalance - totalExpenses + totalReplenishments;
+    
+    await PettyCashTransaction.create({
+      company: companyId,
+      float: expense.float,
+      type: 'expense',
+      reference: expense._id,
+      referenceType: 'PettyCashExpense',
+      amount: -expense.amount,
+      balanceAfter,
+      description: `Expense: ${expense.description}`,
+      createdBy: req.user._id,
+      notes: `Status: ${status}`
+    });
+    
+    // Create journal entry when expense is approved
+    // Debit: Expense Account, Credit: Petty Cash
+    if (status === 'approved' && expense.amount > 0) {
+      try {
+        const expenseCategory = expense.category || 'otherExpenses';
+        const expenseAccount = DEFAULT_ACCOUNTS[expenseCategory] || DEFAULT_ACCOUNTS.otherExpenses;
+        
+        await JournalService.createEntry(companyId, req.user._id, {
+          date: expense.date || new Date(),
+          description: `Petty Cash Expense: ${expense.description}`,
+          sourceType: 'petty_cash_expense',
+          sourceId: expense._id,
+          sourceReference: expense.description,
+          lines: [
+            JournalService.createDebitLine(
+              expenseAccount,
+              expense.amount,
+              `Petty cash expense: ${expense.description}`
+            ),
+            JournalService.createCreditLine(
+              DEFAULT_ACCOUNTS.pettyCash,
+              expense.amount,
+              `Petty cash expense: ${expense.description}`
+            )
+          ],
+          isAutoGenerated: true
+        });
+      } catch (journalError) {
+        console.error('Failed to create journal entry for petty cash expense:', journalError);
+      }
+    }
+    
+    res.json({
+      success: true,
+      data: expense
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Delete expense
+// @route   DELETE /api/petty-cash/expenses/:id
+// @access  Private
+exports.deleteExpense = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    const expense = await PettyCashExpense.findOne({
+      _id: req.params.id,
+      company: companyId
+    });
+    
+    if (!expense) {
+      return res.status(404).json({ success: false, message: 'Expense not found' });
+    }
+    
+    // Only allow deleting pending expenses
+    if (expense.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Can only delete pending expenses' });
+    }
+    
+    await expense.deleteOne();
+    
+    res.json({
+      success: true,
+      message: 'Expense deleted'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get all replenishment requests
+// @route   GET /api/petty-cash/replenishments
+// @access  Private
+exports.getReplenishments = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { floatId, status, startDate, endDate, page = 1, limit = 50 } = req.query;
+    
+    const query = { company: companyId };
+    
+    if (floatId) query.float = floatId;
+    if (status) query.status = status;
+    
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+    
+    const replenishments = await PettyCashReplenishment.find(query)
+      .populate('float', 'name')
+      .populate('requestedBy', 'name email')
+      .populate('approvedBy', 'name email')
+      .populate('completedBy', 'name email')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+    
+    const total = await PettyCashReplenishment.countDocuments(query);
+    
+    res.json({
+      success: true,
+      count: replenishments.length,
+      total,
+      pages: Math.ceil(total / limit),
+      data: replenishments
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Create replenishment request
+// @route   POST /api/petty-cash/replenishments
+// @access  Private
+exports.createReplenishment = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    const replenishment = new PettyCashReplenishment({
+      ...req.body,
+      company: companyId,
+      requestedBy: req.user._id
+    });
+    
+    await replenishment.save();
+    
+    res.status(201).json({
+      success: true,
+      data: replenishment
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Approve replenishment request
+// @route   PUT /api/petty-cash/replenishments/:id/approve
+// @access  Private
+exports.approveReplenishment = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { notes } = req.body;
+    
+    let replenishment = await PettyCashReplenishment.findOne({
+      _id: req.params.id,
+      company: companyId
+    });
+    
+    if (!replenishment) {
+      return res.status(404).json({ success: false, message: 'Replenishment request not found' });
+    }
+    
+    if (replenishment.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Can only approve pending requests' });
+    }
+    
+    replenishment.status = 'approved';
+    replenishment.approvedBy = req.user._id;
+    replenishment.approvedAt = new Date();
+    if (notes) replenishment.notes = notes;
+    
+    await replenishment.save();
+    
+    res.json({
+      success: true,
+      data: replenishment
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Complete replenishment (cash provided)
+// @route   PUT /api/petty-cash/replenishments/:id/complete
+// @access  Private
+exports.completeReplenishment = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { actualAmount, notes } = req.body;
+    
+    let replenishment = await PettyCashReplenishment.findOne({
+      _id: req.params.id,
+      company: companyId
+    });
+    
+    if (!replenishment) {
+      return res.status(404).json({ success: false, message: 'Replenishment request not found' });
+    }
+    
+    if (replenishment.status !== 'approved') {
+      return res.status(400).json({ success: false, message: 'Can only complete approved requests' });
+    }
+    
+    replenishment.status = 'completed';
+    replenishment.actualAmount = actualAmount || replenishment.amount;
+    replenishment.completedBy = req.user._id;
+    replenishment.completedAt = new Date();
+    if (notes) replenishment.notes = notes;
+    
+    await replenishment.save();
+    
+    // Create transaction record
+    const float = await PettyCashFloat.findById(replenishment.float);
+    const expenses = await PettyCashExpense.find({ 
+      float: replenishment.float, 
+      status: { $in: ['approved', 'reimbursed'] } 
+    });
+    const totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+    
+    const allReplenishments = await PettyCashReplenishment.find({ 
+      float: replenishment.float, 
+      status: 'completed' 
+    });
+    const totalReplenishments = allReplenishments.reduce((sum, rep) => sum + (rep.actualAmount || rep.amount || 0), 0);
+    
+    const balanceAfter = float.openingBalance - totalExpenses + totalReplenishments;
+    
+    await PettyCashTransaction.create({
+      company: companyId,
+      float: replenishment.float,
+      type: 'replenishment',
+      reference: replenishment._id,
+      referenceType: 'PettyCashReplenishment',
+      amount: replenishment.actualAmount || replenishment.amount,
+      balanceAfter,
+      description: `Replenishment: ${replenishment.reason}`,
+      createdBy: req.user._id
+    });
+    
+    // Create journal entry when replenishment is completed
+    // Debit: Petty Cash, Credit: Cash in Hand
+    if (replenishment.actualAmount > 0 || replenishment.amount > 0) {
+      const amount = replenishment.actualAmount || replenishment.amount;
+      try {
+        await JournalService.createEntry(companyId, req.user._id, {
+          date: new Date(),
+          description: `Petty Cash Replenishment: ${replenishment.reason}`,
+          sourceType: 'petty_cash_replenishment',
+          sourceId: replenishment._id,
+          sourceReference: 'Replenishment',
+          lines: [
+            JournalService.createDebitLine(
+              DEFAULT_ACCOUNTS.pettyCash,
+              amount,
+              `Petty cash replenishment: ${replenishment.reason}`
+            ),
+            JournalService.createCreditLine(
+              DEFAULT_ACCOUNTS.cashInHand,
+              amount,
+              `Petty cash replenishment: ${replenishment.reason}`
+            )
+          ],
+          isAutoGenerated: true
+        });
+      } catch (journalError) {
+        console.error('Failed to create journal entry for petty cash replenishment:', journalError);
+      }
+    }
+    
+    res.json({
+      success: true,
+      data: replenishment
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Reject replenishment request
+// @route   PUT /api/petty-cash/replenishments/:id/reject
+// @access  Private
+exports.rejectReplenishment = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { reason } = req.body;
+    
+    let replenishment = await PettyCashReplenishment.findOne({
+      _id: req.params.id,
+      company: companyId
+    });
+    
+    if (!replenishment) {
+      return res.status(404).json({ success: false, message: 'Replenishment request not found' });
+    }
+    
+    if (replenishment.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Can only reject pending requests' });
+    }
+    
+    replenishment.status = 'rejected';
+    if (reason) replenishment.notes = reason;
+    
+    await replenishment.save();
+    
+    res.json({
+      success: true,
+      data: replenishment
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get petty cash report
+// @route   GET /api/petty-cash/report
+// @access  Private
+exports.getReport = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { floatId, startDate, endDate } = req.query;
+    
+    // Build date filter
+    const dateFilter = {};
+    if (startDate) dateFilter.$gte = new Date(startDate);
+    if (endDate) dateFilter.$lte = new Date(endDate);
+    
+    // Get all floats or specific float
+    const floatQuery = { company: companyId, isActive: true };
+    if (floatId) floatQuery._id = floatId;
+    
+    const floats = await PettyCashFloat.find(floatQuery).populate('custodian', 'name email');
+    
+    const report = await Promise.all(
+      floats.map(async (float) => {
+        // Get expenses for this float in the date range
+        const expenseQuery = { 
+          float: float._id,
+          status: { $in: ['approved', 'reimbursed'] }
+        };
+        
+        if (startDate || endDate) {
+          expenseQuery.date = dateFilter;
+        }
+        
+        const expenses = await PettyCashExpense.find(expenseQuery)
+          .sort({ date: -1 });
+        
+        // Group expenses by category
+        const expensesByCategory = {};
+        let totalExpenses = 0;
+        
+        expenses.forEach(exp => {
+          const cat = exp.category || 'other';
+          if (!expensesByCategory[cat]) {
+            expensesByCategory[cat] = {
+              category: cat,
+              total: 0,
+              count: 0,
+              items: []
+            };
+          }
+          expensesByCategory[cat].total += exp.amount;
+          expensesByCategory[cat].count += 1;
+          expensesByCategory[cat].items.push(exp);
+          totalExpenses += exp.amount;
+        });
+        
+        // Get replenishments
+        const replQuery = { 
+          float: float._id,
+          status: 'completed'
+        };
+        
+        if (startDate || endDate) {
+          replQuery.completedAt = dateFilter;
+        }
+        
+        const replenishments = await PettyCashReplenishment.find(replQuery);
+        const totalReplenishments = replenishments.reduce((sum, rep) => sum + (rep.actualAmount || rep.amount || 0), 0);
+        
+        // Calculate balance
+        const currentBalance = float.openingBalance - totalExpenses + totalReplenishments;
+        
+        // Get recent transactions
+        const transactions = await PettyCashTransaction.find({
+          float: float._id
+        })
+          .populate('createdBy', 'name')
+          .sort({ date: -1 })
+          .limit(20);
+        
+        return {
+          float: {
+            _id: float._id,
+            name: float.name,
+            openingBalance: float.openingBalance,
+            custodian: float.custodian,
+            location: float.location
+          },
+          summary: {
+            openingBalance: float.openingBalance,
+            totalExpenses,
+            totalReplenishments,
+            currentBalance,
+            expenseCount: expenses.length,
+            replenishmentCount: replenishments.length
+          },
+          expensesByCategory: Object.values(expensesByCategory),
+          transactions,
+          expenses: expenses.slice(0, 50) // Limit to 50 most recent
+        };
+      })
+    );
+    
+    // Calculate totals across all floats
+    const grandTotal = report.reduce((acc, r) => ({
+      openingBalance: acc.openingBalance + r.summary.openingBalance,
+      totalExpenses: acc.totalExpenses + r.summary.totalExpenses,
+      totalReplenishments: acc.totalReplenishments + r.summary.totalReplenishments,
+      currentBalance: acc.currentBalance + r.summary.currentBalance,
+      expenseCount: acc.expenseCount + r.summary.expenseCount,
+      replenishmentCount: acc.replenishmentCount + r.summary.replenishmentCount
+    }), {
+      openingBalance: 0,
+      totalExpenses: 0,
+      totalReplenishments: 0,
+      currentBalance: 0,
+      expenseCount: 0,
+      replenishmentCount: 0
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        report,
+        grandTotal,
+        dateRange: {
+          startDate,
+          endDate
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get petty cash summary/dashboard
+// @route   GET /api/petty-cash/summary
+// @access  Private
+exports.getSummary = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    // Get all active floats
+    const floats = await PettyCashFloat.find({ 
+      company: companyId, 
+      isActive: true 
+    }).populate('custodian', 'name email');
+    
+    // Calculate summary for each float
+    const floatSummaries = await Promise.all(
+      floats.map(async (float) => {
+        const expenses = await PettyCashExpense.find({ 
+          float: float._id,
+          status: { $in: ['approved', 'reimbursed'] }
+        });
+        
+        const replenishments = await PettyCashReplenishment.find({ 
+          float: float._id,
+          status: 'completed'
+        });
+        
+        const pendingExpenses = await PettyCashExpense.countDocuments({
+          float: float._id,
+          status: 'pending'
+        });
+        
+        const pendingReplenishments = await PettyCashReplenishment.countDocuments({
+          float: float._id,
+          status: 'pending'
+        });
+        
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayExpenses = await PettyCashExpense.find({
+          float: float._id,
+          date: { $gte: today },
+          status: { $in: ['approved', 'reimbursed'] }
+        });
+        
+        const totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+        const totalReplenishments = replenishments.reduce((sum, rep) => sum + (rep.actualAmount || rep.amount || 0), 0);
+        const currentBalance = float.openingBalance - totalExpenses + totalReplenishments;
+        const todayTotal = todayExpenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+        
+        // Check if needs replenishment
+        const needsReplenishment = currentBalance < float.minimumBalance;
+        
+        return {
+          _id: float._id,
+          name: float.name,
+          openingBalance: float.openingBalance,
+          currentBalance,
+          minimumBalance: float.minimumBalance,
+          custodian: float.custodian,
+          needsReplenishment,
+          pendingExpenses,
+          pendingReplenishments,
+          todayTotal,
+          totalExpenses,
+          totalReplenishments
+        };
+      })
+    );
+    
+    // Calculate totals
+    const totals = floatSummaries.reduce((acc, f) => ({
+      totalOpeningBalance: acc.totalOpeningBalance + f.openingBalance,
+      totalCurrentBalance: acc.totalCurrentBalance + f.currentBalance,
+      totalTodayExpenses: acc.totalTodayExpenses + f.todayTotal,
+      totalPendingExpenses: acc.totalPendingExpenses + f.pendingExpenses,
+      totalPendingReplenishments: acc.totalPendingReplenishments + f.pendingReplenishments
+    }), {
+      totalOpeningBalance: 0,
+      totalCurrentBalance: 0,
+      totalTodayExpenses: 0,
+      totalPendingExpenses: 0,
+      totalPendingReplenishments: 0
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        floats: floatSummaries,
+        totals,
+        floatCount: floats.length,
+        needsReplenishment: floatSummaries.filter(f => f.needsReplenishment).length
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get transactions history
+// @route   GET /api/petty-cash/transactions
+// @access  Private
+exports.getTransactions = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { floatId, type, startDate, endDate, page = 1, limit = 50 } = req.query;
+    
+    const query = { company: companyId };
+    
+    if (floatId) query.float = floatId;
+    if (type) query.type = type;
+    
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+    
+    const transactions = await PettyCashTransaction.find(query)
+      .populate('float', 'name')
+      .populate('createdBy', 'name email')
+      .sort({ date: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+    
+    const total = await PettyCashTransaction.countDocuments(query);
+    
+    res.json({
+      success: true,
+      count: transactions.length,
+      total,
+      pages: Math.ceil(total / limit),
+      data: transactions
+    });
+  } catch (error) {
+    next(error);
+  }
+};

@@ -1,0 +1,750 @@
+const JournalEntry = require('../models/JournalEntry');
+const FixedAsset = require('../models/FixedAsset');
+const JournalService = require('../services/journalService');
+const path = require('path');
+
+// Dynamic loader for chart of accounts - reads file directly, no caching issues
+// This ensures Journal, Ledger, Trial Balance always reflect current company data
+const getChartOfAccounts = () => {
+  try {
+    // Clear require cache by using a unique cache key with timestamp
+    const chartPath = path.join(__dirname, '../constants/chartOfAccounts.js');
+    const cacheKey = require.resolve(chartPath);
+    
+    // Delete from require cache to force re-read
+    delete require.cache[cacheKey];
+    
+    // Also delete parent directories cache if any
+    Object.keys(require.cache).forEach(key => {
+      if (key.includes('chartOfAccounts')) {
+        delete require.cache[key];
+      }
+    });
+    
+    // Now require the fresh version
+    const chartModule = require('../constants/chartOfAccounts');
+    
+    return {
+      CHART_OF_ACCOUNTS: chartModule.CHART_OF_ACCOUNTS,
+      getAccount: chartModule.getAccount,
+      getAccountsByType: chartModule.getAccountsByType,
+      DEFAULT_ACCOUNTS: chartModule.DEFAULT_ACCOUNTS
+    };
+  } catch (error) {
+    console.error('Error loading chart of accounts:', error);
+    return { 
+      CHART_OF_ACCOUNTS: {}, 
+      getAccount: () => null, 
+      getAccountsByType: () => [], 
+      DEFAULT_ACCOUNTS: {} 
+    };
+  }
+};
+
+// @desc    Get all journal entries
+// @route   GET /api/journal-entries
+// @access  Private
+exports.getJournalEntries = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { startDate, endDate, sourceType, status, search, page = 1, limit = 50 } = req.query;
+    
+    const query = { company: companyId };
+    
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+    
+    if (sourceType) query.sourceType = sourceType;
+    if (status) query.status = status;
+    
+    const entries = await JournalEntry.find(query)
+      .populate('createdBy', 'name email')
+      .populate('postedBy', 'name email')
+      .sort({ date: -1, entryNumber: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+    
+    const total = await JournalEntry.countDocuments(query);
+    
+    res.json({
+      success: true,
+      count: entries.length,
+      total,
+      pages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      data: entries
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get single journal entry
+// @route   GET /api/journal-entries/:id
+// @access  Private
+exports.getJournalEntry = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    const entry = await JournalEntry.findOne({ 
+      _id: req.params.id, 
+      company: companyId 
+    })
+      .populate('createdBy', 'name email')
+      .populate('postedBy', 'name email');
+    
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Journal entry not found' });
+    }
+    
+    res.json({ success: true, data: entry });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Create manual journal entry
+// @route   POST /api/journal-entries
+// @access  Private
+exports.createJournalEntry = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const userId = req.user._id;
+    
+    // Get latest chart of accounts - no server restart needed!
+    const { CHART_OF_ACCOUNTS, getAccount } = getChartOfAccounts();
+    
+    const { date, description, lines, notes, sourceType, sourceReference } = req.body;
+    
+    // Validate required fields
+    if (!date || !description || !lines || lines.length < 2) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Please provide date, description, and at least 2 lines' 
+      });
+    }
+    
+    // Validate lines have valid account codes
+    for (const line of lines) {
+      if (!line.accountCode || !CHART_OF_ACCOUNTS[line.accountCode]) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid account code: ${line.accountCode}`
+        });
+      }
+    }
+    
+    // Calculate totals
+    const totalDebit = lines.reduce((sum, line) => sum + (line.debit || 0), 0);
+    const totalCredit = lines.reduce((sum, line) => sum + (line.credit || 0), 0);
+    
+    // Validate balance
+    if (Math.abs(totalDebit - totalCredit) > 0.01) {
+      return res.status(400).json({
+        success: false,
+        message: `Entry is not balanced. Debits: ${totalDebit.toFixed(2)}, Credits: ${totalCredit.toFixed(2)}`
+      });
+    }
+    
+    // Generate entry number
+    const entryNumber = await JournalEntry.generateEntryNumber(companyId);
+    
+    // Enrich lines with account names
+    const enrichedLines = lines.map(line => {
+      const account = getAccount(line.accountCode);
+      return {
+        accountCode: line.accountCode,
+        accountName: account?.name || 'Unknown Account',
+        description: line.description || '',
+        debit: line.debit || 0,
+        credit: line.credit || 0,
+        reference: line.reference || ''
+      };
+    });
+    
+    // Create entry
+    const entry = await JournalEntry.create({
+      company: companyId,
+      entryNumber,
+      date,
+      description,
+      lines: enrichedLines,
+      totalDebit,
+      totalCredit,
+      // created entries are drafts by default; posting is a separate action
+      status: 'draft',
+      sourceType: sourceType || 'manual',
+      sourceReference: sourceReference || null,
+      isAutoGenerated: false,
+      createdBy: userId,
+      postedBy: null,
+      notes: notes || ''
+    });
+    
+    res.status(201).json({
+      success: true,
+      data: entry
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Post (finalize) a journal entry
+// @route   PUT /api/journal-entries/:id/post
+// @access  Private
+exports.postJournalEntry = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const userId = req.user._id;
+
+    const entry = await JournalEntry.findOne({ _id: req.params.id, company: companyId });
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Journal entry not found' });
+    }
+
+    if (entry.status === 'posted') {
+      return res.status(400).json({ success: false, message: 'Entry is already posted' });
+    }
+
+    if (entry.status === 'voided') {
+      return res.status(400).json({ success: false, message: 'Cannot post a voided entry' });
+    }
+
+    // Ensure the entry is balanced before posting
+    if (!entry.isBalanced()) {
+      return res.status(400).json({ success: false, message: 'Cannot post unbalanced entry' });
+    }
+
+    entry.status = 'posted';
+    entry.postedBy = userId;
+    await entry.save();
+
+    res.json({ success: true, data: entry });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Update journal entry (draft only)
+// @route   PUT /api/journal-entries/:id
+// @access  Private
+exports.updateJournalEntry = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    // Get latest chart of accounts - no server restart needed!
+    const { CHART_OF_ACCOUNTS, getAccount } = getChartOfAccounts();
+    
+    let entry = await JournalEntry.findOne({ 
+      _id: req.params.id, 
+      company: companyId 
+    });
+    
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Journal entry not found' });
+    }
+    
+    // Only allow editing draft entries
+    if (entry.status !== 'draft') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Only draft entries can be edited' 
+      });
+    }
+    
+    const { date, description, lines, notes, sourceType, sourceReference } = req.body;
+    
+    if (lines) {
+      // Validate lines
+      for (const line of lines) {
+        if (!line.accountCode || !CHART_OF_ACCOUNTS[line.accountCode]) {
+          return res.status(400).json({
+            success: false,
+            message: `Invalid account code: ${line.accountCode}`
+          });
+        }
+      }
+      
+      // Calculate totals
+      const totalDebit = lines.reduce((sum, line) => sum + (line.debit || 0), 0);
+      const totalCredit = lines.reduce((sum, line) => sum + (line.credit || 0), 0);
+      
+      // Validate balance
+      if (Math.abs(totalDebit - totalCredit) > 0.01) {
+        return res.status(400).json({
+          success: false,
+          message: 'Entry is not balanced'
+        });
+      }
+      
+      entry.lines = lines.map(line => {
+        const account = getAccount(line.accountCode);
+        return {
+          accountCode: line.accountCode,
+          accountName: account?.name || 'Unknown Account',
+          description: line.description || '',
+          debit: line.debit || 0,
+          credit: line.credit || 0,
+          reference: line.reference || ''
+        };
+      });
+      entry.totalDebit = totalDebit;
+      entry.totalCredit = totalCredit;
+    }
+    
+    if (date) entry.date = date;
+    if (description) entry.description = description;
+    if (notes !== undefined) entry.notes = notes;
+    if (sourceType) entry.sourceType = sourceType;
+    if (sourceReference) entry.sourceReference = sourceReference;
+    
+    await entry.save();
+    
+    res.json({ success: true, data: entry });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Void journal entry
+// @route   DELETE /api/journal-entries/:id
+// @access  Private
+exports.voidJournalEntry = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    const entry = await JournalEntry.findOne({ 
+      _id: req.params.id, 
+      company: companyId 
+    });
+    
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Journal entry not found' });
+    }
+    
+    if (entry.status === 'voided') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Entry is already voided' 
+      });
+    }
+    
+    // Mark as voided instead of deleting
+    entry.status = 'voided';
+    entry.notes = (entry.notes || '') + '\nVoided on ' + new Date().toISOString();
+    await entry.save();
+    
+    res.json({ success: true, message: 'Journal entry voided' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Permanently delete journal entry
+// @route   DELETE /api/journal-entries/:id/permanent
+// @access  Private
+exports.deleteJournalEntry = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    
+    const entry = await JournalEntry.findOne({ 
+      _id: req.params.id, 
+      company: companyId 
+    });
+    
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Journal entry not found' });
+    }
+    
+    // Permanently delete the entry
+    await JournalEntry.deleteOne({ _id: req.params.id });
+    
+    res.json({ success: true, message: 'Journal entry permanently deleted' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get chart of accounts
+// @route   GET /api/journal-entries/accounts
+// @access  Private
+exports.getAccounts = async (req, res, next) => {
+  try {
+    const { type, subtype } = req.query;
+    
+    // Get latest chart of accounts - no server restart needed!
+    const { CHART_OF_ACCOUNTS } = getChartOfAccounts();
+    
+    // Prevent caching - always get fresh data
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    
+    let accounts = Object.entries(CHART_OF_ACCOUNTS).map(([code, account]) => ({
+      code,
+      ...account
+    }));
+    
+    if (type) {
+      accounts = accounts.filter(a => a.type === type);
+    }
+    
+    if (subtype) {
+      accounts = accounts.filter(a => a.subtype === subtype);
+    }
+    
+    res.json({ success: true, data: accounts });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get trial balance
+// @route   GET /api/journal-entries/trial-balance
+// @access  Private
+exports.getTrialBalance = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { startDate, endDate } = req.query;
+    
+    // Get latest chart of accounts - no server restart needed!
+    const { getAccount } = getChartOfAccounts();
+    
+    // Default to all dates (no filter) if not provided
+    let query = { company: companyId, status: 'posted' };
+    
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+    
+    const entries = await JournalEntry.find(query);
+    
+    // Initialize account balances
+    const accountBalances = {};
+    
+    // Process each entry
+    entries.forEach(entry => {
+      entry.lines.forEach(line => {
+        const code = line.accountCode;
+        
+        if (!accountBalances[code]) {
+          const account = getAccount(code);
+          accountBalances[code] = {
+            accountCode: code,
+            accountName: line.accountName,
+            accountType: account?.type || 'unknown',
+            normalBalance: account?.normalBalance || 'debit',
+            debit: 0,
+            credit: 0,
+            balance: 0
+          };
+        }
+
+        accountBalances[code].debit += line.debit || 0;
+        accountBalances[code].credit += line.credit || 0;
+      });
+    });
+    
+    // Calculate balances based on normal balance
+    const report = Object.values(accountBalances).map(account => {
+      // For assets and expenses (debit normal): balance = debit - credit
+      // For liabilities, equity, and revenue (credit normal): balance = credit - debit
+      if (account.normalBalance === 'debit') {
+        account.balance = account.debit - account.credit;
+      } else {
+        account.balance = account.credit - account.debit;
+      }
+
+      // Map fields to frontend expected names and format numbers
+      const mapped = {
+        accountCode: account.accountCode,
+        accountName: account.accountName,
+        accountType: account.accountType,
+        debit: parseFloat(account.debit.toFixed(2)),
+        credit: parseFloat(account.credit.toFixed(2)),
+        balance: parseFloat(account.balance.toFixed(2))
+      };
+
+      return mapped;
+    });
+    
+    // Sort by account code
+    report.sort((a, b) => (a.accountCode || '').localeCompare(b.accountCode || ''));
+    
+    // Calculate totals
+    const totals = {
+      totalDebit: parseFloat(report.reduce((sum, a) => sum + a.debit, 0).toFixed(2)),
+      totalCredit: parseFloat(report.reduce((sum, a) => sum + a.credit, 0).toFixed(2)),
+      totalBalance: parseFloat(report.reduce((sum, a) => sum + Math.abs(a.balance), 0).toFixed(2))
+    };
+    
+    // Group by account type
+    const byType = {};
+    report.forEach(account => {
+      const t = account.accountType || 'unknown';
+      if (!byType[t]) {
+        byType[t] = {
+          type: t,
+          accounts: [],
+          totalDebit: 0,
+          totalCredit: 0
+        };
+      }
+      byType[t].accounts.push(account);
+      byType[t].totalDebit += account.debit;
+      byType[t].totalCredit += account.credit;
+    });
+    
+    res.json({
+      success: true,
+      data: report,
+      totals,
+      byType,
+      period: (startDate || endDate)
+        ? { start: startDate || null, end: endDate || null }
+        : { start: null, end: null }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get general ledger
+// @route   GET /api/journal-entries/general-ledger
+// @access  Private
+exports.getGeneralLedger = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const { startDate, endDate, accountCode } = req.query;
+    
+    // Get latest chart of accounts - no server restart needed!
+    const { getAccount } = getChartOfAccounts();
+    
+    // Default to all dates (no filter) if not provided
+    let query = { company: companyId, status: 'posted' };
+    
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+    
+    const entries = await JournalEntry.find(query)
+      .populate('createdBy', 'name')
+      .sort({ date: 1, entryNumber: 1 });
+    
+    // Initialize account transactions
+    const accountTransactions = {};
+    
+    // Process each entry
+    entries.forEach(entry => {
+      entry.lines.forEach(line => {
+        // Filter by account code if specified
+        if (accountCode && line.accountCode !== accountCode) return;
+        
+        const code = line.accountCode;
+        
+        if (!accountTransactions[code]) {
+          const account = getAccount(code);
+          accountTransactions[code] = {
+            code,
+            name: line.accountName,
+            type: account?.type || 'unknown',
+            normalBalance: account?.normalBalance || 'debit',
+            openingBalance: 0,
+            transactions: [],
+            closingBalance: 0
+          };
+        }
+        
+        accountTransactions[code].transactions.push({
+          date: entry.date,
+          entryNumber: entry.entryNumber,
+          description: entry.description,
+          reference: line.reference || entry.sourceReference,
+          debit: line.debit || 0,
+          credit: line.credit || 0
+        });
+      });
+    });
+    
+    // Calculate balances
+    const ledger = Object.values(accountTransactions).map(account => {
+      // Skip opening balance calculation for now - can be added separately
+      account.openingBalance = 0;
+      
+      // Calculate closing balance
+      let totalDebit = account.transactions.reduce((sum, t) => sum + t.debit, 0);
+      let totalCredit = account.transactions.reduce((sum, t) => sum + t.credit, 0);
+      
+      if (account.normalBalance === 'debit') {
+        account.closingBalance = account.openingBalance + totalDebit - totalCredit;
+      } else {
+        account.closingBalance = account.openingBalance + totalCredit - totalDebit;
+      }
+      
+      account.openingBalance = parseFloat(account.openingBalance.toFixed(2));
+      account.closingBalance = parseFloat(account.closingBalance.toFixed(2));
+      
+      return account;
+    });
+    
+    // Sort by account code
+    ledger.sort((a, b) => a.code.localeCompare(b.code));
+    
+    // Filter if specific account requested
+    const result = accountCode 
+      ? ledger.filter(a => a.code === accountCode) 
+      : ledger;
+    
+    res.json({
+      success: true,
+      data: result,
+      period: (startDate || endDate)
+        ? { start: startDate ? new Date(startDate) : null, end: endDate ? new Date(endDate) : null }
+        : { start: null, end: null }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Run depreciation for all fixed assets and create journal entries
+// @route   POST /api/journal-entries/run-depreciation
+// @access  Private
+exports.runDepreciation = async (req, res, next) => {
+  try {
+    const companyId = req.user.company._id;
+    const userId = req.user._id;
+    const { period } = req.body; // e.g., '2026-01', '2026-02', etc. or 'monthly'
+    
+    // Get latest chart of accounts - no server restart needed!
+    const { DEFAULT_ACCOUNTS } = getChartOfAccounts();
+    
+    // Get all active fixed assets for the company
+    const assets = await FixedAsset.find({ 
+      company: companyId,
+      status: { $in: ['active', 'in_use'] }
+    });
+    
+    if (!assets || assets.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'No active fixed assets found' 
+      });
+    }
+    
+    const results = {
+      totalAssets: assets.length,
+      processed: 0,
+      skipped: 0,
+      errors: [],
+      journalEntries: []
+    };
+    
+    // Calculate depreciation period
+    const now = new Date();
+    const periodDate = period 
+      ? new Date(period + '-01')
+      : new Date(now.getFullYear(), now.getMonth(), 1);
+    
+    const periodLabel = period 
+      ? period 
+      : `${periodDate.getFullYear()}-${String(periodDate.getMonth() + 1).padStart(2, '0')}`;
+    
+    // Process each asset
+    for (const asset of assets) {
+      try {
+        // Check if asset has depreciation settings
+        if (!asset.usefulLifeYears || asset.usefulLifeYears <= 0) {
+          results.skipped++;
+          continue;
+        }
+        
+        // Check if asset is fully depreciated
+        if (asset.isFullyDepreciated) {
+          results.skipped++;
+          continue;
+        }
+        
+        // Get the monthly depreciation amount
+        const annualDepreciation = asset.annualDepreciation || 0;
+        const monthlyDepreciation = annualDepreciation / 12;
+        
+        if (monthlyDepreciation <= 0) {
+          results.skipped++;
+          continue;
+        }
+        
+        // Check if depreciation entry already exists for this period
+        const existingEntry = await JournalEntry.findOne({
+          company: companyId,
+          sourceType: 'depreciation',
+          sourceId: asset._id,
+          description: { $regex: new RegExp(periodLabel, 'i') }
+        });
+        
+        if (existingEntry) {
+          results.skipped++;
+          continue;
+        }
+        
+        // Create depreciation journal entry
+        // Debit: Depreciation Expense (5900)
+        // Credit: Accumulated Depreciation (1800)
+        const entry = await JournalService.createEntry(companyId, userId, {
+          date: periodDate,
+          description: `Depreciation - ${asset.name} - ${periodLabel}`,
+          sourceType: 'depreciation',
+          sourceId: asset._id,
+          sourceReference: asset.assetCode,
+          lines: [
+            JournalService.createDebitLine(
+              DEFAULT_ACCOUNTS.depreciation,
+              monthlyDepreciation,
+              `Depreciation: ${asset.name}`
+            ),
+            JournalService.createCreditLine(
+              DEFAULT_ACCOUNTS.accumulatedDepreciation,
+              monthlyDepreciation,
+              `Accumulated depreciation: ${asset.name}`
+            )
+          ],
+          isAutoGenerated: true
+        });
+        
+        // Update asset's accumulated depreciation
+        asset.accumulatedDepreciation = (asset.accumulatedDepreciation || 0) + monthlyDepreciation;
+        await asset.save();
+        
+        results.processed++;
+        results.journalEntries.push({
+          assetCode: asset.assetCode,
+          assetName: asset.name,
+          amount: monthlyDepreciation,
+          entryNumber: entry.entryNumber
+        });
+        
+      } catch (assetError) {
+        results.errors.push({
+          assetCode: asset.assetCode,
+          error: assetError.message
+        });
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Depreciation processed: ${results.processed} assets, ${results.skipped} skipped`,
+      data: results
+    });
+  } catch (error) {
+    next(error);
+  }
+};
